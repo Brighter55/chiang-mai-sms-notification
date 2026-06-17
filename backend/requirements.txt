@@ -1,0 +1,8 @@
+django>=5.0
+djangorestframework
+django-cors-headers
+twilio
+python-dotenv
+psycopg2-binary
+dj-database-url
+requests
