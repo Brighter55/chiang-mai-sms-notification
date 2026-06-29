@@ -9,5 +9,6 @@ router.register(r"logs", views.NotificationLogViewSet, basename="notificationlog
 
 urlpatterns = [
     path("webhook/clover/", views.clover_webhook, name="clover-webhook"),
+    path("webhook/clover", views.clover_webhook, name="clover-webhook-noslash"),
     path("", include(router.urls)),
 ]

@@ -1,6 +1,7 @@
 import hashlib
 import hmac
 import logging
+import re
 
 import requests
 from django.conf import settings
@@ -12,75 +13,171 @@ from .models import NotificationLog, Order
 
 logger = logging.getLogger(__name__)
 
+_NON_DIGIT_RE = re.compile(r"[^\d]+")
+
+
+# ---------------------------------------------------------------------------
+# Helpers for Clover's API format
+# ---------------------------------------------------------------------------
+
+
+def _extract_list(data: dict, key: str) -> list:
+    """Clover returns lists as ``{"elements": [...]}`` or plain ``[]``.
+
+    This helper normalises both forms — and also handles the case where *data*
+    is ``None``, the key is missing, or the value is already a list.
+    """
+    if not data:
+        return []
+    val = data.get(key)
+    if isinstance(val, list):
+        return val
+    if isinstance(val, dict):
+        return val.get("elements") or []
+    return []
+
+
+def _normalize_phone(phone: str) -> str:
+    """Ensure the phone number is in E.164 format (starts with ``+``).
+
+    Clover sometimes returns bare digits like ``3149546598`` — this adds the
+    US country prefix when missing.
+    """
+    phone = phone.strip()
+    if phone.startswith("+"):
+        return phone
+    # Strip any non-digit characters and prepend +1 (US default)
+    digits = _NON_DIGIT_RE.sub("", phone)
+    if digits.startswith("1") and len(digits) == 11:
+        return f"+{digits}"
+    if len(digits) == 10:
+        return f"+1{digits}"
+    return f"+{digits}" if digits else ""
+
 
 # ---------------------------------------------------------------------------
 # Clover API client
 # ---------------------------------------------------------------------------
 
 
-def fetch_clover_order(merchant_id: str, order_id: str) -> dict | None:
-    """Fetch a full Clover order by ID via the REST API.
+def _call_clover(path: str, params: dict | None = None) -> dict | None:
+    """Make a GET request to the Clover REST API.
 
-    Requires ``CLOVER_API_TOKEN`` and ``CLOVER_MERCHANT_ID`` to be configured
-    in Django settings.  Uses the sandbox or production base URL depending on
-    ``CLOVER_USE_SANDBOX``.
-
-    Returns the parsed JSON order object, or ``None`` on any failure (auth,
-    network, not-found, etc.).
+    Returns the parsed JSON response, or ``None`` on failure.
     """
     token = settings.CLOVER_API_TOKEN
-    if not merchant_id or not token:
-        logger.error("CLOVER_MERCHANT_ID and CLOVER_API_TOKEN must be configured")
+    if not token:
+        logger.error("CLOVER_API_TOKEN is not configured")
         return None
 
-    url = f"{settings.CLOVER_API_BASE_URL}/{merchant_id}/orders/{order_id}"
-    params = {"expand": "lineItems,customers,orderType,orderCart.orderType"}
+    url = f"{settings.CLOVER_API_BASE_URL}/{path}"
     headers = {
         "Authorization": f"Bearer {token}",
         "User-Agent": "chiang-mai-notification/1.0",
     }
-
     try:
         resp = requests.get(url, params=params, headers=headers, timeout=15)
         resp.raise_for_status()
         return resp.json()
     except requests.Timeout:
-        logger.error("Timeout fetching Clover order %s", order_id)
+        logger.error("Timeout fetching %s", url)
     except requests.HTTPError as exc:
         logger.error(
-            "Clover API error for order %s: %s — %s",
-            order_id,
-            resp.status_code,
-            resp.text[:500],
+            "Clover API error %s: %s — %s",
+            url, resp.status_code, resp.text[:500],
         )
     except requests.RequestException as exc:
-        logger.error("Failed to fetch Clover order %s: %s", order_id, exc)
+        logger.error("Failed to fetch %s: %s", url, exc)
     return None
+
+
+def fetch_clover_order(merchant_id: str, order_id: str) -> dict | None:
+    """Fetch a full Clover order by ID via the REST API.
+
+    Clover's ``expand`` parameter only partially expands related resources, so
+    we also fetch customer details separately when present.
+
+    Returns a normalised order dict with ``lineItems`` as a flat list and
+    ``customers`` with full name/phone data, or ``None`` on failure.
+    """
+    order_data = _call_clover(
+        f"{merchant_id}/orders/{order_id}",
+        {"expand": "lineItems,orderType,orderCart.orderType"},
+    )
+    if order_data is None:
+        return None
+
+    # -- Normalise line items into a flat list ------------------------------
+    raw_items = order_data.get("lineItems")
+    if isinstance(raw_items, dict):
+        order_data["lineItems"] = _extract_list(raw_items, "elements")
+
+    # -- Fetch full customer details if we have IDs ------------------------
+    raw_customers = order_data.get("customers")
+    customer_ids = []
+    if isinstance(raw_customers, dict):
+        customer_ids = [
+            c["id"]
+            for c in _extract_list(raw_customers, "elements")
+            if c.get("id")
+        ]
+    elif isinstance(raw_customers, list):
+        customer_ids = [c["id"] for c in raw_customers if c.get("id")]
+
+    enriched_customers = []
+    for cid in customer_ids:
+        cust = _call_clover(
+            f"{merchant_id}/customers/{cid}",
+            {"expand": "phoneNumbers"},
+        )
+        if cust:
+            # Normalise phoneNumbers list
+            raw_phones = cust.get("phoneNumbers")
+            if isinstance(raw_phones, dict):
+                cust["phoneNumbers"] = _extract_list(raw_phones, "elements")
+            enriched_customers.append(cust)
+
+    order_data["customers"] = enriched_customers
+    return order_data
 
 
 def is_online_order(order_data: dict) -> bool:
     """Return ``True`` if the Clover order is an online/pickup/delivery order.
 
-    We look at ``orderType`` (in ``orderCart`` or top-level) — online ordering
-    types always include customer contact info.
+    Checks ``orderType.name`` and ``orderType.label`` (top-level and inside
+    ``orderCart``).
     """
-    # Check inside orderCart first (where atomic orders put it)
-    order_cart = order_data.get("orderCart", {}) or {}
-    order_type = order_cart.get("orderType", {}) or {}
-    type_name = (order_type.get("name") or "").lower()
+    order_types_to_check: list[dict] = []
 
-    # Fall back to top-level orderType
-    if not type_name:
-        order_type = order_data.get("orderType", {}) or {}
-        type_name = (order_type.get("name") or "").lower()
+    # Top-level orderType
+    ot = order_data.get("orderType") or {}
+    if ot:
+        order_types_to_check.append(ot)
 
-    return type_name in ("online", "pickup", "pick-up", "delivery", "online order")
+    # orderCart.orderType
+    cart = order_data.get("orderCart") or {}
+    ot2 = cart.get("orderType") or {}
+    if ot2:
+        order_types_to_check.append(ot2)
+
+    for ot in order_types_to_check:
+        type_str = (ot.get("name") or ot.get("label") or "").lower()
+        if type_str in ("online", "pickup", "pick-up", "delivery", "online order"):
+            return True
+        # Also catch things like "Clover In-store Pickup"
+        if "pickup" in type_str or "pick up" in type_str:
+            return True
+
+    return False
 
 
 def extract_customer_info(order_data: dict) -> tuple[str, str]:
     """Extract ``(name, phone)`` from a Clover order.
 
-    Returns ``("", "")`` if no customer data is present.
+    Expects ``order_data["customers"]`` to be a flat list of enriched customer
+    objects (as set by ``fetch_clover_order``).
+
+    Returns ``("", "")`` when no data is available.
     """
     customers = order_data.get("customers") or []
     if not customers:
@@ -89,22 +186,24 @@ def extract_customer_info(order_data: dict) -> tuple[str, str]:
     customer = customers[0]
     first = (customer.get("firstName") or "").strip()
     last = (customer.get("lastName") or "").strip()
-    name = f"{first} {last}".strip()
-    # Fall back to other name fields if firstName/lastName are empty
-    if not name:
-        name = (customer.get("displayName") or "").strip()
+    name = f"{first} {last}".strip() or (customer.get("displayName") or "").strip()
 
     phone = ""
     phones = customer.get("phoneNumbers") or []
     if phones:
-        phone = (phones[0].get("phoneNumber") or "").strip()
+        phone = _normalize_phone(phones[0].get("phoneNumber") or "")
 
     return name, phone
 
 
 def extract_items_summary(order_data: dict) -> str:
     """Build a human-readable summary string from the order's line items."""
-    line_items = order_data.get("lineItems") or []
+    # Try top-level lineItems (normalised by fetch_clover_order), then orderCart
+    line_items = (
+        order_data.get("lineItems")
+        or _extract_list(order_data.get("orderCart") or {}, "lineItems")
+        or []
+    )
     if not line_items:
         return (order_data.get("title") or "").strip()
 

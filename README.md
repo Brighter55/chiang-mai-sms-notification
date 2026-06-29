@@ -3,10 +3,26 @@
 SMS notification system for Clover POS — reminds customers their online orders are ready for pickup.
 
 ## How it works
-
-1. Clover POS fires a webhook when an order is placed → stored in the database
-2. Open the dashboard → see all pending orders
-3. When an order is physically ready, click **Send SMS** → Twilio texts the customer
+```
+Close Online Ordering Storefront
+  │ Customer places order
+  ▼
+Clover Backend
+  │ POST webhook to registered URL
+  │ Payload: {"merchants": {"{mId}": [{"objectId": "O:{UUID}", "type": "CREATE"}]}}
+  ▼
+POST https://your-domain.com/api/webhook/clover/
+  │
+  ├── 1. Parse objectId → strip "O:" prefix → get order UUID
+  ├── 2. GET /v3/merchants/{mId}/orders/{orderId}?expand=lineItems,orderType
+  │     → gets items summary + order type + customer ID
+  ├── 3. GET /v3/merchants/{mId}/customers/{customerId}?expand=phoneNumbers  
+  │     → gets customer name + phone number
+  ├── 4. is_online_order() check → filters out Dine-In
+  ├── 5. Customer has name + phone? → skips if not
+  └── 6. Save to PostgreSQL → visible on dashboard
+  └── 7. click "send" to send SMS via twilio to remind customer their order is ready
+```
 
 ## Stack
 
@@ -37,14 +53,6 @@ npm run dev
 ```
 
 The frontend dev server proxies `/api` requests to `http://127.0.0.1:8000`.
-
-### Test the webhook
-
-```sh
-curl -X POST http://127.0.0.1:8000/api/webhook/clover/ \
-  -H "Content-Type: application/json" \
-  -d '{"payload": {"id": "ORDER-001", "customer": {"name": "Jane", "phoneNumber": "+15551234567"}, "lineItems": [{"name": "Coffee"}], "title": "Test"}}'
-```
 
 ## Switching to PostgreSQL
 

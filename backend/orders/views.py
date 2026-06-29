@@ -82,6 +82,18 @@ def clover_webhook(request):
             status=status.HTTP_400_BAD_REQUEST,
         )
 
+    # -- Handle Clover webhook URL verification -----------------------------
+    verification_code = payload.get("verificationCode")
+    if verification_code:
+        logger.warning(
+            "=== CLOVER VERIFICATION CODE === %s (copy this into Clover dashboard)",
+            verification_code,
+        )
+        return Response(
+            {"verificationCode": verification_code},
+            status=status.HTTP_200_OK,
+        )
+
     merchants = payload.get("merchants", {})
     if not merchants:
         logger.info("Webhook received with no merchant events — ignored")
@@ -182,10 +194,12 @@ def _process_single_event(merchant_id: str, event: dict) -> str:
 
     # Only process online/pickup/delivery orders
     if not is_online_order(order_data):
+        ot = order_data.get("orderType") or {}
+        ot_name = ot.get("name") or ot.get("label") or "unknown"
         logger.info(
             "Order %s is not an online order (orderType=%s) — skipped",
             obj_uuid,
-            (order_data.get("orderCart") or {}).get("orderType", {}).get("name", "unknown"),
+            ot_name,
         )
         return "skipped"
 

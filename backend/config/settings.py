@@ -13,6 +13,8 @@ SECRET_KEY = os.getenv("SECRET_KEY", "insecure-dev-key-change-me")
 DEBUG = os.getenv("DEBUG", "True").lower() == "true"
 
 ALLOWED_HOSTS = os.getenv("ALLOWED_HOSTS", "localhost,127.0.0.1").split(",")
+if DEBUG:
+    ALLOWED_HOSTS += [".ngrok-free.dev", ".ngrok.io", ".ngrok.app"]
 
 INSTALLED_APPS = [
     "django.contrib.admin",
@@ -95,6 +97,28 @@ REST_FRAMEWORK = {
     "DEFAULT_RENDERER_CLASSES": [
         "rest_framework.renderers.JSONRenderer",
     ],
+}
+
+# Logging
+LOGGING = {
+    "version": 1,
+    "disable_existing_loggers": False,
+    "handlers": {
+        "console": {
+            "class": "logging.StreamHandler",
+        },
+    },
+    "root": {
+        "handlers": ["console"],
+        "level": "WARNING",
+    },
+    "loggers": {
+        "orders": {
+            "handlers": ["console"],
+            "level": "INFO" if DEBUG else "WARNING",
+            "propagate": False,
+        },
+    },
 }
 
 # Clover
