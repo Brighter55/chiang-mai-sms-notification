@@ -28,6 +28,7 @@ INSTALLED_APPS = [
     "corsheaders",
     # Local
     "orders",
+    "subscribers",
 ]
 
 MIDDLEWARE = [
@@ -66,7 +67,12 @@ WSGI_APPLICATION = "config.wsgi.application"
 DATABASE_URL = os.getenv("DATABASE_URL", "postgres://postgres:postgres@localhost:5432/clover_notify")
 DATABASES = {
     "default": dj_database_url.parse(DATABASE_URL),
+    "landing": dj_database_url.parse(
+        os.getenv("LANDING_DATABASE_URL", "postgres://postgres:postgres@localhost:5432/clover_landing")
+    ),
 }
+
+DATABASE_ROUTERS = ["subscribers.router.SubscriberRouter"]
 
 AUTH_PASSWORD_VALIDATORS = [
     {"NAME": "django.contrib.auth.password_validation.UserAttributeSimilarityValidator"},

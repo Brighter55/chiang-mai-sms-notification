@@ -257,7 +257,8 @@ def build_sms_message(order: Order) -> str:
         f"Hi {order.customer_name}, "
         f"your order from {merchant} is ready for pickup! 🛍️\n\n"
         f"Order: {order.items_summary or '#' + order.clover_order_id[-8:]}\n\n"
-        f"Thank you!"
+        f"Thank you!\n\n"
+        f"Reply STOP to opt out."
     )
 
 
