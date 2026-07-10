@@ -7,3 +7,4 @@ psycopg2-binary
 dj-database-url
 requests
 phonenumbers>=8.13.0
+gunicorn>=21.2.0
