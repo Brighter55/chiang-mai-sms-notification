@@ -3,6 +3,7 @@ import hmac
 import logging
 import re
 
+import phonenumbers
 import requests
 from django.conf import settings
 from django.utils import timezone
@@ -38,20 +39,27 @@ def _extract_list(data: dict, key: str) -> list:
 
 
 def _normalize_phone(phone: str) -> str:
-    """Ensure the phone number is in E.164 format (starts with ``+``).
+    """Normalize a phone number to E.164 format (starts with ``+``).
 
-    Clover sometimes returns bare digits like ``3149546598`` — this adds the
-    US country prefix when missing.
+    Uses the phonenumbers library with the project's default phone region
+    (US).  Falls back to treating bare digits as a raw number if the library
+    cannot parse the input, to avoid breaking existing Clover order data.
     """
     phone = phone.strip()
+    if not phone:
+        return ""
     if phone.startswith("+"):
         return phone
-    # Strip any non-digit characters and prepend +1 (US default)
+
+    try:
+        parsed = phonenumbers.parse(phone, settings.DEFAULT_PHONE_REGION)
+        if phonenumbers.is_valid_number(parsed):
+            return phonenumbers.format_number(parsed, phonenumbers.PhoneNumberFormat.E164)
+    except phonenumbers.NumberParseException:
+        pass
+
+    # Fallback: strip non-digits and prepend "+"
     digits = _NON_DIGIT_RE.sub("", phone)
-    if digits.startswith("1") and len(digits) == 11:
-        return f"+{digits}"
-    if len(digits) == 10:
-        return f"+1{digits}"
     return f"+{digits}" if digits else ""
 
 
@@ -257,7 +265,8 @@ def build_sms_message(order: Order) -> str:
         f"Hi {order.customer_name}, "
         f"your order from {merchant} is ready for pickup! 🛍️\n\n"
         f"Order: {order.items_summary or '#' + order.clover_order_id[-8:]}\n\n"
-        f"Thank you!"
+        f"Thank you!\n\n"
+        f"Reply STOP to opt out."
     )
 
 

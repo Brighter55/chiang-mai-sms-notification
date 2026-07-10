@@ -28,6 +28,7 @@ INSTALLED_APPS = [
     "corsheaders",
     # Local
     "orders",
+    "subscribers",
 ]
 
 MIDDLEWARE = [
@@ -66,7 +67,12 @@ WSGI_APPLICATION = "config.wsgi.application"
 DATABASE_URL = os.getenv("DATABASE_URL", "postgres://postgres:postgres@localhost:5432/clover_notify")
 DATABASES = {
     "default": dj_database_url.parse(DATABASE_URL),
+    "landing": dj_database_url.parse(
+        os.getenv("LANDING_DATABASE_URL", "postgres://postgres:postgres@localhost:5432/clover_landing")
+    ),
 }
+
+DATABASE_ROUTERS = ["subscribers.router.SubscriberRouter"]
 
 AUTH_PASSWORD_VALIDATORS = [
     {"NAME": "django.contrib.auth.password_validation.UserAttributeSimilarityValidator"},
@@ -136,6 +142,9 @@ CLOVER_API_BASE_URL = (
 TWILIO_ACCOUNT_SID = os.getenv("TWILIO_ACCOUNT_SID", "")
 TWILIO_AUTH_TOKEN = os.getenv("TWILIO_AUTH_TOKEN", "")
 TWILIO_PHONE_NUMBER = os.getenv("TWILIO_PHONE_NUMBER", "")
+
+# Phone
+DEFAULT_PHONE_REGION = os.getenv("DEFAULT_PHONE_REGION", "US")
 
 # Merchant
 MERCHANT_NAME = os.getenv("MERCHANT_NAME", "Our Shop")

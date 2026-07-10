@@ -6,3 +6,4 @@ python-dotenv
 psycopg2-binary
 dj-database-url
 requests
+phonenumbers>=8.13.0
