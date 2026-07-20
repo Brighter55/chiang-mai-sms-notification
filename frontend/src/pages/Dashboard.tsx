@@ -1,14 +1,43 @@
-import { BellRing, RefreshCcw } from "lucide-react";
+import { useState } from "react";
+import { BellRing, Calendar, ChevronDown, ChevronUp, RefreshCcw } from "lucide-react";
 import { OrderCard } from "@/components/OrderCard";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { useOrders } from "@/hooks/useOrders";
+import type { Order } from "@/lib/api";
+
+/** Returns true if the ISO date string falls on today's date (local tz). */
+function isToday(dateStr: string): boolean {
+  const d = new Date(dateStr);
+  const now = new Date();
+  return (
+    d.getFullYear() === now.getFullYear() &&
+    d.getMonth() === now.getMonth() &&
+    d.getDate() === now.getDate()
+  );
+}
 
 export function Dashboard() {
   const { orders, loading, error, refresh, sendSms, sendingId } = useOrders();
+  const [showOlder, setShowOlder] = useState(false);
+
+  const todayOrders = orders.filter((o) => isToday(o.created_at));
+  const olderOrders = orders.filter((o) => !isToday(o.created_at));
 
   const pendingCount = orders.filter((o) => o.status === "pending").length;
+  const olderPendingCount = olderOrders.filter((o) => o.status === "pending").length;
+
+  function renderOrder(order: Order) {
+    return (
+      <OrderCard
+        key={order.id}
+        order={order}
+        onSendSms={sendSms}
+        isSending={sendingId === order.id}
+      />
+    );
+  }
 
   return (
     <div className="min-h-screen bg-background">
@@ -67,16 +96,50 @@ export function Dashboard() {
           </div>
         ) : (
           <ScrollArea className="h-[calc(100vh-8rem)]">
-            <div className="grid gap-4 sm:grid-cols-2">
-              {orders.map((order) => (
-                <OrderCard
-                  key={order.id}
-                  order={order}
-                  onSendSms={sendSms}
-                  isSending={sendingId === order.id}
-                />
-              ))}
-            </div>
+            {/* Today's orders */}
+            {todayOrders.length > 0 && (
+              <div className="mb-6">
+                <div className="mb-3 flex items-center gap-2 text-sm font-medium text-muted-foreground">
+                  <Calendar className="h-4 w-4" />
+                  <span>Today ({todayOrders.length})</span>
+                </div>
+                <div className="grid gap-4 sm:grid-cols-2">
+                  {todayOrders.map(renderOrder)}
+                </div>
+              </div>
+            )}
+
+            {/* Older orders — hidden behind a toggle */}
+            {olderOrders.length > 0 && (
+              <div>
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  className="mb-3 flex items-center gap-2 text-muted-foreground"
+                  onClick={() => setShowOlder(!showOlder)}
+                >
+                  {showOlder ? (
+                    <ChevronUp className="h-4 w-4" />
+                  ) : (
+                    <ChevronDown className="h-4 w-4" />
+                  )}
+                  {showOlder
+                    ? "Hide older orders"
+                    : `Show ${olderOrders.length} older order${olderOrders.length > 1 ? "s" : ""}`}
+                  {olderPendingCount > 0 && !showOlder && (
+                    <Badge variant="warning" className="ml-1">
+                      {olderPendingCount} pending
+                    </Badge>
+                  )}
+                </Button>
+
+                {showOlder && (
+                  <div className="grid gap-4 sm:grid-cols-2">
+                    {olderOrders.map(renderOrder)}
+                  </div>
+                )}
+              </div>
+            )}
           </ScrollArea>
         )}
       </main>
