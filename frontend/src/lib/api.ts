@@ -1,4 +1,4 @@
-const BASE_URL = "/api";
+const BASE_URL = import.meta.env.VITE_API_URL || "/api";
 
 // ---------------------------------------------------------------------------
 // CSRF helper — Django requires the CSRF token as a header on unsafe methods
