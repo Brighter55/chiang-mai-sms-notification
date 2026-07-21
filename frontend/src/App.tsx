@@ -1,6 +1,9 @@
 import { useCallback, useEffect, useState } from "react";
+import { Routes, Route } from "react-router-dom";
 import { Dashboard } from "@/pages/Dashboard";
 import { LoginPage } from "@/pages/LoginPage";
+import PrivacyPage from "@/pages/PrivacyPage";
+import EulaPage from "@/pages/EulaPage";
 import { Toaster } from "@/components/ui/toaster";
 import { fetchMe, setOnAuthError, type User } from "@/lib/api";
 
@@ -9,7 +12,7 @@ type AuthState =
   | { kind: "authed"; user: User }
   | { kind: "unauthed" };
 
-function App() {
+function AuthenticatedApp() {
   const [auth, setAuth] = useState<AuthState>({ kind: "loading" });
   const [authKey, setAuthKey] = useState(0); // bump to re-mount Dashboard on login/logout
 
@@ -53,17 +56,20 @@ function App() {
   }
 
   if (auth.kind === "unauthed") {
-    return (
-      <>
-        <LoginPage onLogin={handleLogin} />
-        <Toaster />
-      </>
-    );
+    return <LoginPage onLogin={handleLogin} />;
   }
 
+  return <Dashboard key={authKey} onLogout={handleLogout} />;
+}
+
+function App() {
   return (
     <>
-      <Dashboard key={authKey} onLogout={handleLogout} />
+      <Routes>
+        <Route path="/privacy" element={<PrivacyPage />} />
+        <Route path="/eula" element={<EulaPage />} />
+        <Route path="/*" element={<AuthenticatedApp />} />
+      </Routes>
       <Toaster />
     </>
   );
