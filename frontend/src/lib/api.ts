@@ -1,5 +1,31 @@
 const BASE_URL = "/api";
 
+// ---------------------------------------------------------------------------
+// CSRF helper — Django requires the CSRF token as a header on unsafe methods
+// when using session authentication across origins.
+// ---------------------------------------------------------------------------
+function getCsrfToken(): string {
+  const match = document.cookie.match(/(?:^|;\s*)csrftoken=([^;]*)/);
+  return match ? match[1] : "";
+}
+
+function isUnsafe(method: string): boolean {
+  return ["POST", "PUT", "PATCH", "DELETE"].includes(method.toUpperCase());
+}
+
+// ---------------------------------------------------------------------------
+// Auth state
+// ---------------------------------------------------------------------------
+let onAuthError: (() => void) | null = null;
+
+export function setOnAuthError(callback: (() => void) | null) {
+  onAuthError = callback;
+}
+
+// ---------------------------------------------------------------------------
+// Types
+// ---------------------------------------------------------------------------
+
 export interface Order {
   id: number;
   clover_order_id: string;
@@ -24,16 +50,41 @@ export interface NotificationLog {
   created_at: string;
 }
 
+export interface User {
+  id: number;
+  username: string;
+}
+
+// ---------------------------------------------------------------------------
+// Fetch wrapper
+// ---------------------------------------------------------------------------
+
 async function request<T>(
   url: string,
   options?: RequestInit
 ): Promise<T> {
+  const headers: Record<string, string> = {
+    "Content-Type": "application/json",
+    ...(options?.headers as Record<string, string> | undefined),
+  };
+
+  // Attach CSRF token for unsafe methods (Django session auth)
+  if (!options?.method || isUnsafe(options.method)) {
+    const token = getCsrfToken();
+    if (token) {
+      headers["X-CSRFToken"] = token;
+    }
+  }
+
   const res = await fetch(`${BASE_URL}${url}`, {
-    headers: {
-      "Content-Type": "application/json",
-    },
+    credentials: "include",
     ...options,
+    headers,
   });
+
+  if (res.status === 401 && onAuthError) {
+    onAuthError();
+  }
 
   if (!res.ok) {
     const body = await res.json().catch(() => ({}));
@@ -44,6 +95,29 @@ async function request<T>(
 
   return res.json();
 }
+
+// ---------------------------------------------------------------------------
+// Auth API
+// ---------------------------------------------------------------------------
+
+export function login(username: string, password: string): Promise<User> {
+  return request("/login/", {
+    method: "POST",
+    body: JSON.stringify({ username, password }),
+  });
+}
+
+export function logout(): Promise<{ ok: boolean }> {
+  return request("/logout/", { method: "POST" });
+}
+
+export function fetchMe(): Promise<User> {
+  return request("/me/");
+}
+
+// ---------------------------------------------------------------------------
+// Orders API
+// ---------------------------------------------------------------------------
 
 export function fetchOrders(params?: {
   status?: string;
