@@ -96,6 +96,21 @@ CORS_ALLOWED_ORIGINS = [
     for origin in os.getenv("CORS_ALLOWED_ORIGINS", "http://localhost:5173,http://127.0.0.1:5173").split(",")
     if origin.strip()
 ]
+CORS_ALLOW_CREDENTIALS = True
+
+# ---------------------------------------------------------------------------
+# Session — sliding expiration (refresh cookie expiry on every request)
+# ---------------------------------------------------------------------------
+SESSION_COOKIE_AGE = 28_800  # 8 hours of inactivity
+SESSION_SAVE_EVERY_REQUEST = True  # re-send cookie on each request → sliding window
+SESSION_COOKIE_SAMESITE = "Lax" if DEBUG else "None"
+SESSION_COOKIE_SECURE = not DEBUG
+
+# ---------------------------------------------------------------------------
+# CSRF — needed for cross-domain session auth with an SPA
+# ---------------------------------------------------------------------------
+CSRF_COOKIE_SAMESITE = "Lax" if DEBUG else "None"
+CSRF_COOKIE_SECURE = not DEBUG
 
 # DRF
 REST_FRAMEWORK = {
@@ -103,6 +118,12 @@ REST_FRAMEWORK = {
     "PAGE_SIZE": 50,
     "DEFAULT_RENDERER_CLASSES": [
         "rest_framework.renderers.JSONRenderer",
+    ],
+    "DEFAULT_AUTHENTICATION_CLASSES": [
+        "rest_framework.authentication.SessionAuthentication",
+    ],
+    "DEFAULT_PERMISSION_CLASSES": [
+        "rest_framework.permissions.IsAuthenticated",
     ],
 }
 

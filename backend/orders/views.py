@@ -3,11 +3,13 @@ import logging
 import re
 
 from django.conf import settings
+from django.contrib.auth import authenticate, login, logout
 from django.db import IntegrityError
 from rest_framework import status, viewsets
 from rest_framework.decorators import action, api_view, permission_classes
 from rest_framework.permissions import AllowAny
 from rest_framework.response import Response
+from rest_framework.views import APIView
 
 from .models import NotificationLog, Order
 from .serializers import (
@@ -264,7 +266,6 @@ class OrderViewSet(viewsets.ModelViewSet):
     """CRUD + custom actions for orders."""
 
     queryset = Order.objects.all()
-    permission_classes = [AllowAny]  # TODO: tighten for production
 
     def get_serializer_class(self):
         if self.action == "list":
@@ -310,4 +311,59 @@ class NotificationLogViewSet(viewsets.ReadOnlyModelViewSet):
 
     queryset = NotificationLog.objects.select_related("order").all()
     serializer_class = NotificationLogSerializer
+
+
+# ---------------------------------------------------------------------------
+# Auth views — session login / logout / current user
+# ---------------------------------------------------------------------------
+
+
+class LoginView(APIView):
+    """POST /api/login/ — authenticate and create a session."""
+
+    authentication_classes = []
     permission_classes = [AllowAny]
+
+    def post(self, request):
+        username = request.data.get("username", "").strip()
+        password = request.data.get("password", "")
+
+        if not username or not password:
+            return Response(
+                {"error": "Username and password are required."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        user = authenticate(request, username=username, password=password)
+        if user is None:
+            return Response(
+                {"error": "Invalid credentials."},
+                status=status.HTTP_401_UNAUTHORIZED,
+            )
+
+        login(request, user)
+        return Response({
+            "id": user.id,
+            "username": user.username,
+        })
+
+
+class LogoutView(APIView):
+    """POST /api/logout/ — clear the current session."""
+
+    authentication_classes = []
+    permission_classes = [AllowAny]
+
+    def post(self, request):
+        logout(request)
+        return Response({"ok": True})
+
+
+class MeView(APIView):
+    """GET /api/me/ — return the current user (or 403 if not logged in)."""
+
+    def get(self, request):
+        return Response({
+            "id": request.user.id,
+            "username": request.user.username,
+        })

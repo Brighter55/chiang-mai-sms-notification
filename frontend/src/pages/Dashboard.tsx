@@ -1,11 +1,15 @@
 import { useState } from "react";
-import { BellRing, Calendar, ChevronDown, ChevronUp, RefreshCcw } from "lucide-react";
+import { BellRing, Calendar, ChevronDown, ChevronUp, LogOut, RefreshCcw } from "lucide-react";
 import { OrderCard } from "@/components/OrderCard";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { useOrders } from "@/hooks/useOrders";
 import type { Order } from "@/lib/api";
+
+interface DashboardProps {
+  onLogout: () => void;
+}
 
 /** Returns true if the ISO date string falls on today's date (local tz). */
 function isToday(dateStr: string): boolean {
@@ -18,7 +22,7 @@ function isToday(dateStr: string): boolean {
   );
 }
 
-export function Dashboard() {
+export function Dashboard({ onLogout }: DashboardProps) {
   const { orders, loading, error, refresh, sendSms, sendingId } = useOrders();
   const [showOlder, setShowOlder] = useState(false);
 
@@ -51,17 +55,22 @@ export function Dashboard() {
               <Badge variant="warning">{pendingCount} pending</Badge>
             )}
           </div>
-          <Button
-            variant="outline"
-            size="sm"
-            onClick={refresh}
-            disabled={loading}
-          >
-            <RefreshCcw
-              className={`mr-2 h-4 w-4 ${loading ? "animate-spin" : ""}`}
-            />
-            Refresh
-          </Button>
+          <div className="flex items-center gap-2">
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={refresh}
+              disabled={loading}
+            >
+              <RefreshCcw
+                className={`mr-2 h-4 w-4 ${loading ? "animate-spin" : ""}`}
+              />
+              Refresh
+            </Button>
+            <Button variant="ghost" size="sm" onClick={onLogout} title="Sign out">
+              <LogOut className="h-4 w-4" />
+            </Button>
+          </div>
         </div>
       </header>
 
