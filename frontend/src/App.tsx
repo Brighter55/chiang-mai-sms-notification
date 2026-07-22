@@ -4,6 +4,7 @@ import { Dashboard } from "@/pages/Dashboard";
 import { LoginPage } from "@/pages/LoginPage";
 import PrivacyPage from "@/pages/PrivacyPage";
 import EulaPage from "@/pages/EulaPage";
+import SupportPage from "@/pages/SupportPage";
 import { Toaster } from "@/components/ui/toaster";
 import { fetchMe, setOnAuthError, type User } from "@/lib/api";
 
@@ -68,6 +69,7 @@ function App() {
       <Routes>
         <Route path="/privacy" element={<PrivacyPage />} />
         <Route path="/eula" element={<EulaPage />} />
+        <Route path="/support" element={<SupportPage />} />
         <Route path="/*" element={<AuthenticatedApp />} />
       </Routes>
       <Toaster />
