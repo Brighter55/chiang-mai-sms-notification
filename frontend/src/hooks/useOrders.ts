@@ -1,17 +1,22 @@
 import { useCallback, useEffect, useState } from "react";
-import { fetchOrders, sendSms as sendSmsApi, type Order } from "@/lib/api";
+import {
+  fetchOrders,
+  sendSms as sendSmsApi,
+  syncOrders,
+  type Order,
+} from "@/lib/api";
 import { toast } from "@/hooks/use-toast";
 
 interface UseOrdersReturn {
   orders: Order[];
   loading: boolean;
   error: string | null;
-  refresh: () => void;
+  refresh: () => Promise<void>;
   sendSms: (orderId: number) => Promise<void>;
   sendingId: number | null;
 }
 
-export function useOrders(pollIntervalMs = 15_000): UseOrdersReturn {
+export function useOrders(): UseOrdersReturn {
   const [orders, setOrders] = useState<Order[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -20,6 +25,26 @@ export function useOrders(pollIntervalMs = 15_000): UseOrdersReturn {
   const refresh = useCallback(async () => {
     try {
       setError(null);
+      // Pull new orders from Clover first, then reload the local list.
+      // A Clover failure must not blank the dashboard, so continue anyway.
+      let synced = { created: 0, updated: 0, skipped: 0, errors: 0 };
+      try {
+        synced = await syncOrders();
+      } catch (err) {
+        toast({
+          title: "Clover sync failed",
+          description:
+            err instanceof Error ? err.message : "Could not reach Clover",
+          variant: "destructive",
+        });
+      }
+      const newOrUpdated = synced.created + synced.updated;
+      if (newOrUpdated > 0) {
+        toast({
+          title: "Orders pulled from Clover",
+          description: `${newOrUpdated} new or updated order${newOrUpdated > 1 ? "s" : ""}.`,
+        });
+      }
       const data = await fetchOrders();
       setOrders(data.results);
     } catch (err) {
@@ -29,12 +54,10 @@ export function useOrders(pollIntervalMs = 15_000): UseOrdersReturn {
     }
   }, []);
 
-  // Initial load + polling
+  // Initial load — a single fetch on mount, then manual refreshes only
   useEffect(() => {
     refresh();
-    const interval = setInterval(refresh, pollIntervalMs);
-    return () => clearInterval(interval);
-  }, [refresh, pollIntervalMs]);
+  }, [refresh]);
 
   const sendSms = useCallback(
     async (orderId: number) => {

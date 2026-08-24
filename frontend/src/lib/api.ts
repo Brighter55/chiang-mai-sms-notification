@@ -136,6 +136,18 @@ export function sendSms(orderId: number): Promise<NotificationLog> {
   return request(`/orders/${orderId}/send/`, { method: "POST" });
 }
 
+export interface SyncResult {
+  created: number;
+  updated: number;
+  skipped: number;
+  errors: number;
+}
+
+/** Pull recent orders from Clover into the local database (manual refresh). */
+export function syncOrders(): Promise<SyncResult> {
+  return request("/orders/sync/", { method: "POST" });
+}
+
 export function fetchLogs(): Promise<{ count: number; results: NotificationLog[] }> {
   return request("/logs/");
 }

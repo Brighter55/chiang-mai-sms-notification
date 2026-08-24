@@ -1,12 +1,10 @@
-import json
 import logging
-import re
 
 from django.conf import settings
 from django.contrib.auth import authenticate, login, logout
 from django.db import IntegrityError
 from rest_framework import status, viewsets
-from rest_framework.decorators import action, api_view, permission_classes
+from rest_framework.decorators import action
 from rest_framework.permissions import AllowAny
 from rest_framework.response import Response
 from rest_framework.views import APIView
@@ -22,176 +20,24 @@ from .services import (
     extract_items_summary,
     fetch_clover_order,
     is_online_order,
+    list_recent_clover_orders,
     send_order_notification,
-    verify_clover_signature,
 )
 
 logger = logging.getLogger(__name__)
 
-# Regex to extract object type prefix and UUID from an objectId like "O:UUID"
-_OBJ_ID_RE = re.compile(r"^([A-Z]+):(.+)$")
+# Max orders processed in a single manual sync (keeps Refresh snappy)
+SYNC_ORDER_CAP = 50
 
 
-# ---------------------------------------------------------------------------
-# Clover webhook
-# ---------------------------------------------------------------------------
-
-
-@api_view(["POST"])
-@permission_classes([AllowAny])
-def clover_webhook(request):
-    """Receive order events from Clover.
-
-    Clover sends **lightweight** webhook payloads with only object IDs and
-    event types (CREATE / UPDATE / DELETE).  This handler:
-
-    1. Verifies the ``X-Clover-Signature`` (if a secret is configured).
-    2. Parses the payload — expects the format below (may batch multiple
-       merchants and events).
-    3. For each **Orders** event (``O:…`` objectId) fetches the full order
-       from the Clover REST API.
-    4. Skips orders that are not *online / pickup / delivery* type.
-    5. Skips orders that have no customer phone number.
-    6. Creates / updates the local ``Order`` record.
-
-    Webhook payload shape::
-
-        {
-            "appId": "…",
-            "merchants": {
-                "{mId}": [
-                    {"objectId": "O:{UUID}", "type": "CREATE", "ts": …},
-                    …
-                ]
-            }
-        }
-    """
-    # -- Verify signature ---------------------------------------------------
-    signature = request.headers.get("X-Clover-Signature", "")
-    if not verify_clover_signature(request.body, signature):
-        logger.warning("Invalid Clover webhook signature")
-        return Response(
-            {"error": "Invalid signature"},
-            status=status.HTTP_403_FORBIDDEN,
-        )
-
-    # -- Parse body ---------------------------------------------------------
-    try:
-        payload = json.loads(request.body)
-    except json.JSONDecodeError:
-        return Response(
-            {"error": "Invalid JSON"},
-            status=status.HTTP_400_BAD_REQUEST,
-        )
-
-    # -- Handle Clover webhook URL verification -----------------------------
-    verification_code = payload.get("verificationCode")
-    if verification_code:
-        logger.warning(
-            "=== CLOVER VERIFICATION CODE === %s (copy this into Clover dashboard)",
-            verification_code,
-        )
-        return Response(
-            {"verificationCode": verification_code},
-            status=status.HTTP_200_OK,
-        )
-
-    merchants = payload.get("merchants", {})
-    if not merchants:
-        logger.info("Webhook received with no merchant events — ignored")
-        return Response({"processed": 0, "skipped": 0, "errors": 0})
-
-    # Check early that we *can* fetch order details
-    if not settings.CLOVER_API_TOKEN:
-        logger.error("CLOVER_API_TOKEN is not set — cannot fetch order details")
-        return Response(
-            {"error": "Clover API token not configured. Set CLOVER_API_TOKEN."},
-            status=status.HTTP_503_SERVICE_UNAVAILABLE,
-        )
-
-    # -- Process events -----------------------------------------------------
-    created_count = 0
-    updated_count = 0
-    skipped_count = 0
-    error_count = 0
-    events_processed = False
-
-    for merchant_id, events in merchants.items():
-        if not events:
-            continue
-
-        for event in events:
-            try:
-                result = _process_single_event(merchant_id, event)
-                if result == "created":
-                    created_count += 1
-                elif result == "updated":
-                    updated_count += 1
-                elif result == "skipped":
-                    skipped_count += 1
-                events_processed = True
-            except Exception:
-                logger.exception("Error processing event %s", event)
-                error_count += 1
-
-    if not events_processed:
-        return Response(
-            {"processed": 0, "skipped": 0, "errors": 0},
-            status=status.HTTP_200_OK,
-        )
-
-    total_new = created_count + updated_count
-    logger.info(
-        "Webhook processed: %d created, %d updated, %d skipped, %d errors",
-        created_count, updated_count, skipped_count, error_count,
-    )
-    return Response(
-        {
-            "processed": total_new,
-            "created": created_count,
-            "updated": updated_count,
-            "skipped": skipped_count,
-            "errors": error_count,
-        },
-        status=status.HTTP_200_OK if total_new == 0 else status.HTTP_201_CREATED,
-    )
-
-
-def _process_single_event(merchant_id: str, event: dict) -> str:
-    """Process one Clover webhook event.
+def _sync_clover_order(merchant_id: str, order_uuid: str) -> str:
+    """Fetch one Clover order and create/update the local record.
 
     Returns one of ``"created"``, ``"updated"``, ``"skipped"``.
     """
-    object_id = (event.get("objectId") or "").strip()
-    event_type = (event.get("type") or "").strip().upper()
-
-    if not object_id:
-        logger.warning("Webhook event missing objectId — skipped")
-        return "skipped"
-
-    # Parse the objectId — we only care about Orders ("O:" prefix)
-    m = _OBJ_ID_RE.match(object_id)
-    if not m:
-        logger.warning("Unrecognised objectId format: %s — skipped", object_id)
-        return "skipped"
-
-    obj_prefix, obj_uuid = m.group(1), m.group(2)
-    if obj_prefix != "O":
-        logger.debug("Ignoring non-order webhook: %s", object_id)
-        return "skipped"
-
-    if event_type == "DELETE":
-        _handle_order_deleted(obj_uuid)
-        return "updated"
-
-    if event_type not in ("CREATE", "UPDATE"):
-        logger.debug("Ignoring unknown event type: %s", event_type)
-        return "skipped"
-
-    # Fetch full order from Clover API
-    order_data = fetch_clover_order(merchant_id, obj_uuid)
+    order_data = fetch_clover_order(merchant_id, order_uuid)
     if order_data is None:
-        logger.warning("Could not fetch order %s from Clover — skipped", obj_uuid)
+        logger.warning("Could not fetch order %s from Clover — skipped", order_uuid)
         return "skipped"
 
     # Only process online/pickup/delivery orders
@@ -200,7 +46,7 @@ def _process_single_event(merchant_id: str, event: dict) -> str:
         ot_name = ot.get("name") or ot.get("label") or "unknown"
         logger.info(
             "Order %s is not an online order (orderType=%s) — skipped",
-            obj_uuid,
+            order_uuid,
             ot_name,
         )
         return "skipped"
@@ -208,12 +54,12 @@ def _process_single_event(merchant_id: str, event: dict) -> str:
     # Extract customer info
     customer_name, customer_phone = extract_customer_info(order_data)
     if not customer_name:
-        logger.info("Order %s has no customer name — skipped", obj_uuid)
+        logger.info("Order %s has no customer name — skipped", order_uuid)
         return "skipped"
     if not customer_phone:
         logger.info(
             "Order %s (%s) has no customer phone — skipped",
-            obj_uuid,
+            order_uuid,
             customer_name,
         )
         return "skipped"
@@ -223,7 +69,7 @@ def _process_single_event(merchant_id: str, event: dict) -> str:
     # Create or update the local record
     try:
         order, created = Order.objects.update_or_create(
-            clover_order_id=obj_uuid,
+            clover_order_id=order_uuid,
             defaults={
                 "customer_name": customer_name,
                 "customer_phone": customer_phone,
@@ -231,31 +77,14 @@ def _process_single_event(merchant_id: str, event: dict) -> str:
             },
         )
     except IntegrityError:
-        order = Order.objects.get(clover_order_id=obj_uuid)
+        order = Order.objects.get(clover_order_id=order_uuid)
         created = False
 
     if created:
-        logger.info("Order %s created (%s, %s)", obj_uuid, customer_name, customer_phone)
+        logger.info("Order %s created (%s, %s)", order_uuid, customer_name, customer_phone)
         return "created"
-    else:
-        logger.info("Order %s updated (%s, %s)", obj_uuid, customer_name, customer_phone)
-        return "updated"
-
-
-def _handle_order_deleted(order_uuid: str) -> None:
-    """Mark a local order as cancelled when Clover sends a DELETE event."""
-    try:
-        order = Order.objects.get(clover_order_id=order_uuid)
-        if order.status != Order.Status.CANCELLED:
-            order.status = Order.Status.CANCELLED
-            order.save(update_fields=["status"])
-            logger.info("Order %s cancelled via webhook DELETE", order_uuid)
-        else:
-            logger.debug("Order %s already cancelled", order_uuid)
-    except Order.DoesNotExist:
-        logger.debug(
-            "Received DELETE for unknown order %s — ignored", order_uuid,
-        )
+    logger.info("Order %s updated (%s, %s)", order_uuid, customer_name, customer_phone)
+    return "updated"
 
 
 # ---------------------------------------------------------------------------
@@ -266,6 +95,10 @@ class OrderViewSet(viewsets.ModelViewSet):
     """CRUD + custom actions for orders."""
 
     queryset = Order.objects.all()
+
+    # Primary keys are integers — prevents the detail route ("{pk:[0-9]+}")
+    # from shadowing the "sync" action URL.
+    lookup_value_regex = r"[0-9]+"
 
     def get_serializer_class(self):
         if self.action == "list":
@@ -278,6 +111,64 @@ class OrderViewSet(viewsets.ModelViewSet):
         if status_filter:
             qs = qs.filter(status=status_filter)
         return qs
+
+    @action(detail=False, methods=["post"])
+    def sync(self, request):
+        """Pull recent orders from Clover and create/update local records."""
+        if not settings.CLOVER_API_TOKEN:
+            return Response(
+                {"error": "Clover API token not configured. Set CLOVER_API_TOKEN."},
+                status=status.HTTP_503_SERVICE_UNAVAILABLE,
+            )
+        if not settings.CLOVER_MERCHANT_ID:
+            return Response(
+                {"error": "Clover merchant ID not configured. Set CLOVER_MERCHANT_ID."},
+                status=status.HTTP_503_SERVICE_UNAVAILABLE,
+            )
+
+        merchant_id = settings.CLOVER_MERCHANT_ID
+        recent_orders = list_recent_clover_orders(merchant_id)
+
+        # Orders already sent or cancelled are never re-fetched
+        skip_ids = set(
+            Order.objects.exclude(status=Order.Status.PENDING).values_list(
+                "clover_order_id", flat=True
+            )
+        )
+
+        created = updated = skipped = errors = 0
+        processed = 0
+        for order in recent_orders:
+            if processed >= SYNC_ORDER_CAP:
+                break
+            order_uuid = order.get("id")
+            if not order_uuid or order_uuid in skip_ids:
+                continue
+            try:
+                result = _sync_clover_order(merchant_id, order_uuid)
+            except Exception:
+                logger.exception("Error syncing order %s", order_uuid)
+                result = "error"
+            processed += 1
+            if result == "created":
+                created += 1
+            elif result == "updated":
+                updated += 1
+            elif result == "skipped":
+                skipped += 1
+            else:
+                errors += 1
+
+        logger.info(
+            "Sync complete: %d created, %d updated, %d skipped, %d errors",
+            created, updated, skipped, errors,
+        )
+        return Response({
+            "created": created,
+            "updated": updated,
+            "skipped": skipped,
+            "errors": errors,
+        })
 
     @action(detail=True, methods=["post"])
     def send(self, request, pk=None):

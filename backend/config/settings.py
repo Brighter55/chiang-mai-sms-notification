@@ -161,10 +161,10 @@ LOGGING = {
 }
 
 # Clover
-CLOVER_WEBHOOK_SECRET = os.getenv("CLOVER_WEBHOOK_SECRET", "")
 CLOVER_API_TOKEN = os.getenv("CLOVER_API_TOKEN", "")
 CLOVER_MERCHANT_ID = os.getenv("CLOVER_MERCHANT_ID", "")
 CLOVER_USE_SANDBOX = os.getenv("CLOVER_USE_SANDBOX", "True").lower() == "true"
+CLOVER_SYNC_LOOKBACK_DAYS = int(os.getenv("CLOVER_SYNC_LOOKBACK_DAYS", "2"))
 CLOVER_API_BASE_URL = (
     "https://apisandbox.dev.clover.com/v3/merchants"
     if CLOVER_USE_SANDBOX

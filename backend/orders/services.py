@@ -1,7 +1,6 @@
-import hashlib
-import hmac
 import logging
 import re
+from datetime import timedelta
 
 import phonenumbers
 import requests
@@ -233,26 +232,35 @@ def extract_items_summary(order_data: dict) -> str:
 
 
 # ---------------------------------------------------------------------------
-# Webhook verification
+# Clover order listing (manual sync)
 # ---------------------------------------------------------------------------
 
-def verify_clover_signature(payload: bytes, signature_header: str) -> bool:
-    """Validate the X-Clover-Signature header against the raw request body.
 
-    Clover signs webhooks with HMAC-SHA256 using your webhook secret as the
-    key.  Returns True when the signature matches (or when no secret is
-    configured, for development convenience).
+def list_recent_clover_orders(merchant_id: str) -> list[dict]:
+    """List recent Clover orders within the sync lookback window.
+
+    Returns order objects sorted by ``modifiedTime`` descending, or ``[]`` on
+    failure.  Retries once without the ``filter`` param if Clover rejects the
+    filter syntax.
     """
-    secret = settings.CLOVER_WEBHOOK_SECRET
-    if not secret:
-        logger.warning("CLOVER_WEBHOOK_SECRET is not set — skipping verification")
-        return True
+    since_ms = int(
+        (timezone.now() - timedelta(days=settings.CLOVER_SYNC_LOOKBACK_DAYS))
+        .timestamp()
+        * 1000
+    )
 
-    expected = hmac.new(
-        secret.encode("utf-8"), payload, hashlib.sha256
-    ).hexdigest()
+    data = _call_clover(
+        f"{merchant_id}/orders",
+        {"limit": 100, "filter": f"modifiedTime>={since_ms}"},
+    )
+    if data is None:
+        # Fallback: fetch the most recent page without a time filter
+        data = _call_clover(f"{merchant_id}/orders", {"limit": 100})
 
-    return hmac.compare_digest(expected, signature_header)
+    orders = _extract_list(data, "elements")
+    orders = [o for o in orders if o.get("id")]
+    orders.sort(key=lambda o: o.get("modifiedTime") or 0, reverse=True)
+    return orders
 
 
 # ---------------------------------------------------------------------------
