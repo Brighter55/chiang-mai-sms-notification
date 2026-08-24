@@ -4,25 +4,25 @@ SMS notification system for Clover POS — reminds customers their online orders
 
 ## How it works
 ```
-Close Online Ordering Storefront
-  │ Customer places order
+Customer places order on the Clover Online Ordering Storefront
   ▼
-Clover Backend
-  │ POST webhook to registered URL
-  │ Payload: {"merchants": {"{mId}": [{"objectId": "O:{UUID}", "type": "CREATE"}]}}
-  ▼
-POST https://your-domain.com/api/webhook/clover/
-  │
-  ├── 1. Parse objectId → strip "O:" prefix → get order UUID
-  ├── 2. GET /v3/merchants/{mId}/orders/{orderId}?expand=lineItems,orderType
+Dashboard "Refresh" button → POST /api/orders/sync/
+  ├── 1. GET /v3/merchants/{mId}/orders?filter=modifiedTime>=…  → recent orders
+  ├── 2. For each new/pending order:
+  │     GET /v3/merchants/{mId}/orders/{orderId}?expand=lineItems,orderType
   │     → gets items summary + order type + customer ID
-  ├── 3. GET /v3/merchants/{mId}/customers/{customerId}?expand=phoneNumbers  
+  ├── 3. GET /v3/merchants/{mId}/customers/{customerId}?expand=phoneNumbers
   │     → gets customer name + phone number
   ├── 4. is_online_order() check → filters out Dine-In
   ├── 5. Customer has name + phone? → skips if not
   └── 6. Save to PostgreSQL → visible on dashboard
   └── 7. click "send" to send SMS via twilio to remind customer their order is ready
 ```
+
+Orders are pulled with a **merchant-generated Clover API token** — no developer
+app or app approval required. There is **no auto-polling**: orders are fetched
+from Clover only when Refresh is clicked. Orders already sent or cancelled are
+never re-fetched.
 
 ## Stack
 
@@ -77,7 +77,10 @@ The frontend dev server proxies `/api` requests to `http://127.0.0.1:8000`.
 |---|---|
 | `SECRET_KEY` | Django secret key |
 | `DATABASE_URL` | Database connection string |
-| `CLOVER_WEBHOOK_SECRET` | Clover webhook verifier token (blank = skip verification in dev) |
+| `CLOVER_API_TOKEN` | Merchant-generated Clover API token (dashboard → Account & Setup → API Tokens) |
+| `CLOVER_MERCHANT_ID` | Your Clover merchant ID (e.g. `DTWTK…`) |
+| `CLOVER_USE_SANDBOX` | `True` = sandbox API, `False` = production (⚠️ defaults to `True` — must set `False` in production) |
+| `CLOVER_SYNC_LOOKBACK_DAYS` | How far back each manual sync looks (default `2`) |
 | `TWILIO_ACCOUNT_SID` | Twilio account SID |
 | `TWILIO_AUTH_TOKEN` | Twilio auth token |
 | `TWILIO_PHONE_NUMBER` | Twilio sender phone number (E.164) |

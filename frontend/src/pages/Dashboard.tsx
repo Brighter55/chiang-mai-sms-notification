@@ -100,7 +100,7 @@ export function Dashboard({ onLogout }: DashboardProps) {
             <BellRing className="mb-4 h-10 w-10" />
             <p className="text-lg font-medium">No orders yet</p>
             <p className="text-sm">
-              Orders from Clover will appear here automatically.
+              Click Refresh to pull new orders from Clover.
             </p>
           </div>
         ) : (
