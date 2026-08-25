@@ -114,7 +114,7 @@ async function request<T>(
 // ---------------------------------------------------------------------------
 
 export function login(username: string, password: string): Promise<User> {
-  return request("/login/", {
+  return request<User>("/login/", {
     method: "POST",
     body: JSON.stringify({ username, password }),
   }).then((user) => {
@@ -128,7 +128,7 @@ export function logout(): Promise<{ ok: boolean }> {
 }
 
 export function fetchMe(): Promise<User> {
-  return request("/me/").then((user) => {
+  return request<User>("/me/").then((user) => {
     setCsrfToken(user.csrf_token);
     return user;
   });
