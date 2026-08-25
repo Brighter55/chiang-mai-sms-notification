@@ -4,7 +4,19 @@ const BASE_URL = import.meta.env.VITE_API_URL || "/api";
 // CSRF helper — Django requires the CSRF token as a header on unsafe methods
 // when using session authentication across origins.
 // ---------------------------------------------------------------------------
+// CSRF token for cross-origin session auth — captured from the login/me
+// JSON responses because the csrftoken cookie is host-scoped to the API
+// domain and is not readable from this origin's JavaScript.
+let csrfToken: string | null = null;
+
+function setCsrfToken(token?: string) {
+  if (token) csrfToken = token;
+}
+
 function getCsrfToken(): string {
+  if (csrfToken) return csrfToken;
+  // Fallback for local dev (localhost:5173 -> localhost:8000 share a host,
+  // so the cookie IS readable there)
   const match = document.cookie.match(/(?:^|;\s*)csrftoken=([^;]*)/);
   return match ? match[1] : "";
 }
@@ -53,6 +65,7 @@ export interface NotificationLog {
 export interface User {
   id: number;
   username: string;
+  csrf_token?: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -104,6 +117,9 @@ export function login(username: string, password: string): Promise<User> {
   return request("/login/", {
     method: "POST",
     body: JSON.stringify({ username, password }),
+  }).then((user) => {
+    setCsrfToken(user.csrf_token);
+    return user;
   });
 }
 
@@ -112,7 +128,10 @@ export function logout(): Promise<{ ok: boolean }> {
 }
 
 export function fetchMe(): Promise<User> {
-  return request("/me/");
+  return request("/me/").then((user) => {
+    setCsrfToken(user.csrf_token);
+    return user;
+  });
 }
 
 // ---------------------------------------------------------------------------

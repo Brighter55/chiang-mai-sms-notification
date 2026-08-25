@@ -3,6 +3,7 @@ import logging
 from django.conf import settings
 from django.contrib.auth import authenticate, login, logout
 from django.db import IntegrityError
+from django.middleware.csrf import get_token
 from rest_framework import status, viewsets
 from rest_framework.decorators import action
 from rest_framework.permissions import AllowAny
@@ -236,6 +237,7 @@ class LoginView(APIView):
         return Response({
             "id": user.id,
             "username": user.username,
+            "csrf_token": get_token(request),
         })
 
 
@@ -257,4 +259,5 @@ class MeView(APIView):
         return Response({
             "id": request.user.id,
             "username": request.user.username,
+            "csrf_token": get_token(request),
         })
