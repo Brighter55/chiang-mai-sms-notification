@@ -106,7 +106,9 @@ CORS_ALLOW_CREDENTIALS = True
 # ---------------------------------------------------------------------------
 SESSION_COOKIE_AGE = 28_800  # 8 hours of inactivity
 SESSION_SAVE_EVERY_REQUEST = True  # re-send cookie on each request → sliding window
-SESSION_COOKIE_SAMESITE = "Lax" if DEBUG else "None"
+# SameSite=Lax works because the dashboard and API are same-site custom
+# subdomains; overridable via env if a cross-site origin is ever needed.
+SESSION_COOKIE_SAMESITE = os.getenv("SESSION_COOKIE_SAMESITE", "Lax")
 SESSION_COOKIE_SECURE = not DEBUG
 
 # ---------------------------------------------------------------------------
@@ -120,7 +122,7 @@ CSRF_TRUSTED_ORIGINS = [
     ).split(",")
     if origin.strip()
 ]
-CSRF_COOKIE_SAMESITE = "Lax" if DEBUG else "None"
+CSRF_COOKIE_SAMESITE = os.getenv("CSRF_COOKIE_SAMESITE", "Lax")
 CSRF_COOKIE_SECURE = not DEBUG
 
 # DRF
