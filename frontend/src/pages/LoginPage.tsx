@@ -44,7 +44,9 @@ export function LoginPage({ onLogin }: LoginPageProps) {
     <div className="flex min-h-screen items-center justify-center bg-background px-4">
       <Card className="w-full max-w-sm">
         <CardHeader className="text-center">
-          <BellRing className="mx-auto mb-3 h-8 w-8 text-muted-foreground" />
+          <div className="mx-auto mb-3 flex h-12 w-12 items-center justify-center rounded-lg bg-primary/15 text-primary">
+            <BellRing className="h-6 w-6" />
+          </div>
           <CardTitle>Order Notifications</CardTitle>
           <CardDescription>Sign in to view and manage orders</CardDescription>
         </CardHeader>

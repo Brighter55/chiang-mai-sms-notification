@@ -49,10 +49,15 @@ export function Dashboard({ onLogout }: DashboardProps) {
       <header className="sticky top-0 z-10 border-b bg-background/95 backdrop-blur supports-[backdrop-filter]:bg-background/60">
         <div className="container flex h-14 max-w-4xl items-center justify-between">
           <div className="flex items-center gap-3">
-            <BellRing className="h-5 w-5" />
+            <div className="flex h-9 w-9 items-center justify-center rounded-lg bg-primary/15 text-primary">
+              <BellRing className="h-5 w-5" />
+            </div>
             <h1 className="text-lg font-semibold">Order Notifications</h1>
             {pendingCount > 0 && (
-              <Badge variant="warning">{pendingCount} pending</Badge>
+              <Badge variant="warning">
+                <span className="mr-1.5 inline-block h-1.5 w-1.5 rounded-full bg-primary" />
+                {pendingCount} pending
+              </Badge>
             )}
           </div>
           <div className="flex items-center gap-2">
@@ -92,12 +97,16 @@ export function Dashboard({ onLogout }: DashboardProps) {
 
         {loading && orders.length === 0 ? (
           <div className="flex flex-col items-center justify-center py-20 text-muted-foreground">
-            <BellRing className="mb-4 h-10 w-10 animate-pulse" />
+            <div className="mb-4 flex h-14 w-14 items-center justify-center rounded-full bg-primary/10 text-primary">
+              <BellRing className="h-7 w-7 animate-pulse" />
+            </div>
             <p className="text-lg">Loading orders...</p>
           </div>
         ) : orders.length === 0 ? (
           <div className="flex flex-col items-center justify-center py-20 text-muted-foreground">
-            <BellRing className="mb-4 h-10 w-10" />
+            <div className="mb-4 flex h-14 w-14 items-center justify-center rounded-full bg-primary/10 text-primary">
+              <BellRing className="h-7 w-7" />
+            </div>
             <p className="text-lg font-medium">No orders yet</p>
             <p className="text-sm">
               Click Refresh to pull new orders from Clover.
@@ -108,7 +117,7 @@ export function Dashboard({ onLogout }: DashboardProps) {
             {/* Today's orders */}
             {todayOrders.length > 0 && (
               <div className="mb-6">
-                <div className="mb-3 flex items-center gap-2 text-sm font-medium text-muted-foreground">
+                <div className="mb-3 flex items-center gap-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
                   <Calendar className="h-4 w-4" />
                   <span>Today ({todayOrders.length})</span>
                 </div>
