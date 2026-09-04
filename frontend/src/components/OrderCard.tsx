@@ -1,4 +1,11 @@
-import { Loader2, Phone, ShoppingBag, User } from "lucide-react";
+import {
+  CheckCircle2,
+  Clock,
+  Loader2,
+  MessageSquare,
+  Phone,
+  User,
+} from "lucide-react";
 import type { Order } from "@/lib/api";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -29,11 +36,11 @@ function timeAgo(dateStr: string): string {
 
 const statusConfig: Record<
   Order["status"],
-  { label: string; variant: "warning" | "success" | "destructive" }
+  { label: string; variant: "warning" | "success" | "muted" }
 > = {
   pending: { label: "Pending", variant: "warning" },
   notified: { label: "Notified", variant: "success" },
-  cancelled: { label: "Cancelled", variant: "destructive" },
+  cancelled: { label: "Cancelled", variant: "muted" },
 };
 
 export function OrderCard({ order, onSendSms, isSending }: OrderCardProps) {
@@ -42,40 +49,59 @@ export function OrderCard({ order, onSendSms, isSending }: OrderCardProps) {
   return (
     <Card
       className={cn(
-        "transition-opacity",
+        "relative overflow-hidden border-border/40 bg-surface-low shadow-none transition-opacity hover:border-border hover:shadow-md",
         order.status === "notified" && "opacity-75"
       )}
     >
-      <CardHeader className="flex flex-row items-start justify-between space-y-0 pb-2">
-        <div className="space-y-1">
-          <CardTitle className="text-base font-semibold">
-            {order.items_summary || `Order #${order.clover_order_id.slice(-8)}`}
-          </CardTitle>
-          <div className="flex items-center gap-2 text-sm text-muted-foreground">
-            <User className="h-3.5 w-3.5" />
-            <span>{order.customer_name}</span>
+      {order.status === "pending" && (
+        <div
+          aria-hidden
+          className="absolute inset-y-0 left-0 w-1 bg-primary"
+        />
+      )}
+
+      <CardHeader className="space-y-3 p-5 pb-3">
+        <div className="flex items-start justify-between gap-3">
+          <div className="min-w-0 space-y-1">
+            <p className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
+              Order #{order.clover_order_id.slice(-8)}
+            </p>
+            {order.items_summary && (
+              <CardTitle className="line-clamp-2 text-base font-semibold leading-snug">
+                {order.items_summary}
+              </CardTitle>
+            )}
           </div>
-          <div className="flex items-center gap-2 text-sm text-muted-foreground">
-            <Phone className="h-3.5 w-3.5" />
-            <span>{order.customer_phone || "No phone"}</span>
+          <Badge variant={variant} className="shrink-0">
+            {label}
+          </Badge>
+        </div>
+
+        <div className="grid grid-cols-2 divide-x divide-border/60 overflow-hidden rounded-md border border-border/40 bg-background/60 text-xs text-muted-foreground">
+          <div className="flex min-w-0 items-center gap-1.5 px-3 py-2">
+            <User className="h-3.5 w-3.5 shrink-0" />
+            <span className="truncate">{order.customer_name}</span>
+          </div>
+          <div className="flex min-w-0 items-center gap-1.5 px-3 py-2">
+            <Phone className="h-3.5 w-3.5 shrink-0" />
+            <span className="truncate">
+              {order.customer_phone || "No phone"}
+            </span>
           </div>
         </div>
-        <Badge variant={variant}>{label}</Badge>
       </CardHeader>
 
-      <CardContent className="pb-2">
-        <div className="flex items-center gap-2 text-xs text-muted-foreground">
-          <ShoppingBag className="h-3 w-3" />
+      <CardContent className="p-5 pt-0">
+        <div className="flex items-center gap-1.5 text-xs text-muted-foreground">
+          <Clock className="h-3 w-3 shrink-0" />
           <span>Ordered {timeAgo(order.created_at)}</span>
           {order.notified_at && (
-            <span>
-              · Notified {timeAgo(order.notified_at)}
-            </span>
+            <span>· Notified {timeAgo(order.notified_at)}</span>
           )}
         </div>
       </CardContent>
 
-      <CardFooter>
+      <CardFooter className="p-5 pt-0">
         {order.status === "pending" ? (
           <Button
             onClick={() => onSendSms(order.id)}
@@ -83,12 +109,17 @@ export function OrderCard({ order, onSendSms, isSending }: OrderCardProps) {
             size="sm"
             className="w-full"
           >
-            {isSending && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
+            {isSending ? (
+              <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+            ) : (
+              <MessageSquare className="mr-2 h-4 w-4" />
+            )}
             {isSending ? "Sending..." : "Send SMS"}
           </Button>
         ) : order.status === "notified" ? (
-          <p className="w-full text-center text-sm text-muted-foreground">
-            ✓ SMS sent
+          <p className="flex w-full items-center justify-center gap-1.5 text-sm text-tertiary">
+            <CheckCircle2 className="h-4 w-4" />
+            SMS sent
           </p>
         ) : (
           <p className="w-full text-center text-sm text-muted-foreground">

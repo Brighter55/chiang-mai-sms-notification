@@ -45,6 +45,26 @@ export default {
           DEFAULT: "hsl(var(--card))",
           foreground: "hsl(var(--card-foreground))",
         },
+        tertiary: {
+          DEFAULT: "hsl(var(--tertiary))",
+          foreground: "hsl(var(--tertiary-foreground))",
+        },
+        surface: {
+          DEFAULT: "hsl(var(--surface))",
+          low: "hsl(var(--surface-low))",
+          high: "hsl(var(--surface-high))",
+        },
+      },
+      fontFamily: {
+        sans: [
+          "Inter",
+          "ui-sans-serif",
+          "system-ui",
+          "-apple-system",
+          "Segoe UI",
+          "Roboto",
+          "sans-serif",
+        ],
       },
       borderRadius: {
         lg: "var(--radius)",
