@@ -270,8 +270,7 @@ def list_recent_clover_orders(merchant_id: str) -> list[dict]:
 def build_sms_message(order: Order) -> str:
     merchant = settings.MERCHANT_NAME
     return (
-        f"Hi {order.customer_name}, "
-        f"your order from {merchant} is ready for pickup! 🛍️\n\n"
+        f"Your order from {merchant} is ready for pickup! 🛍️\n\n"
         f"Thank you!\n\n"
         f"Reply STOP to opt out."
     )
