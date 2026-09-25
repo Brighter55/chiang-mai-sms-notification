@@ -78,14 +78,38 @@ Lint/build: `npm run lint`, `npm run build` (`tsc -b && vite build` → `dist/`)
 ## Key flows (read before editing)
 
 ### Manual order sync — `POST /api/orders/sync/` (auth required)
-Triggered only by the dashboard **Refresh** button
-1. `list_recent_clover_orders()` → GET `/v3/merchants/{mId}/orders` filtered `modifiedTime>=now - CLOVER_SYNC_LOOKBACK_DAYS` (default 2), capped at 100.
-2. Orders whose local status is not `pending` (already notified/cancelled) are **never re-fetched** — they're excluded up front.
-3. For each candidate (`SYNC_ORDER_CAP = 50` in `views.py`): `fetch_clover_order()` GETs the order with `expand=lineItems,orderType,orderCart.orderType`, then enriches each customer via `/customers/{cId}?expand=phoneNumbers`.
-4. `is_online_order()` drops Dine-In (keeps order types containing online / pickup / pick-up / delivery — top-level and `orderCart.orderType`).
-5. `extract_customer_info()`: skips if there's no customer name or no phone. Phone is normalized to E.164 (`phonenumbers`, `DEFAULT_PHONE_REGION` default `US`).
-6. `extract_items_summary()` builds `"Name x2, Other"` (first 5 items).
-7. `Order.update_or_create()` by `clover_order_id`. Returns `{created, updated, skipped, errors}`.
+Runs on the dashboard **Refresh** button, and once in the background when the
+dashboard mounts (see `useOrders.ts` — the page renders local orders first and
+never waits on Clover).
+
+The whole sync costs **two Clover requests**, no matter how many orders there
+are. Keep it that way: an earlier version fetched each order (and then each
+customer) individually, which took ~20s and tripped Clover's **429 rate
+limit** — and since a failed call returns `None`, rate-limited orders were
+silently dropped.
+
+1. `list_recent_clover_orders()` → GET `/v3/merchants/{mId}/orders` filtered
+   `modifiedTime>=now - CLOVER_SYNC_LOOKBACK_DAYS` (default 2), `limit=100`, with
+   `expand=lineItems,orderType,orderCart.orderType,customers`. That single
+   response carries everything the sync needs.
+2. `_orders_to_sync()` drops orders whose local status isn't `pending`
+   (already notified/cancelled), drops non-online orders via `is_online_order()`
+   — which is free now, because the order type came back expanded — and caps
+   the rest at `SYNC_ORDER_CAP = 50` in `views.py`.
+3. `fetch_customer_phone_map()` resolves every customer on the batch in one
+   paged sweep of `/customers?expand=phoneNumbers` (stops early once all wanted
+   ids are seen; falls back to individual lookups for anything missed).
+   `attach_customer_phones()` patches those onto the orders.
+4. `extract_customer_info()`: skips if there's no customer name or no phone.
+   Phone is normalized to E.164 (`phonenumbers`, `DEFAULT_PHONE_REGION` default `US`).
+5. `extract_items_summary()` builds `"Name x2, Other"` (first 5 items).
+6. `_save_orders()` writes the batch with one `bulk_create(update_conflicts=True)`
+   keyed on `clover_order_id`, touching only the customer/item fields so a sync
+   can never undo a notification. Returns `{created, updated, skipped, errors}`.
+
+A `threading.Lock` rejects an overlapping sync, so two staff clicking Refresh
+(or React's dev-mode double-mount) can't crawl Clover twice. All Clover calls
+go through one `requests.Session` for connection reuse.
 
 ### Send SMS — `POST /api/orders/{id}/send/` (auth required)
 - 409 if already notified, 400 if no customer phone.

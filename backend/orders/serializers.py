@@ -22,7 +22,8 @@ class NotificationLogSerializer(serializers.ModelSerializer):
 class OrderListSerializer(serializers.ModelSerializer):
     """Compact representation for the order list."""
 
-    notification_count = serializers.SerializerMethodField()
+    # Annotated by OrderViewSet.get_queryset — one query for the whole page
+    notification_count = serializers.IntegerField(read_only=True)
 
     class Meta:
         model = Order
@@ -38,9 +39,6 @@ class OrderListSerializer(serializers.ModelSerializer):
             "notification_count",
         ]
         read_only_fields = fields
-
-    def get_notification_count(self, obj: Order) -> int:
-        return obj.notifications.count()
 
 
 class OrderDetailSerializer(serializers.ModelSerializer):
