@@ -1,8 +1,9 @@
 import logging
+import threading
 
 from django.conf import settings
 from django.contrib.auth import authenticate, login, logout
-from django.db import IntegrityError
+from django.db.models import Count
 from django.middleware.csrf import get_token
 from rest_framework import status, viewsets
 from rest_framework.decorators import action
@@ -17,11 +18,13 @@ from .serializers import (
     OrderListSerializer,
 )
 from .services import (
+    attach_customer_phones,
     extract_customer_info,
     extract_items_summary,
-    fetch_clover_order,
+    fetch_customer_phone_map,
     is_online_order,
     list_recent_clover_orders,
+    order_customer_ids,
     send_order_notification,
 )
 
@@ -30,62 +33,118 @@ logger = logging.getLogger(__name__)
 # Max orders processed in a single manual sync (keeps Refresh snappy)
 SYNC_ORDER_CAP = 50
 
+# Held for the duration of a sync so two overlapping Refreshes (or React's
+# dev-mode double-mount) can't crawl Clover at the same time. Process-local,
+# which is all this needs on a single worker.
+_sync_lock = threading.Lock()
 
-def _sync_clover_order(merchant_id: str, order_uuid: str) -> str:
-    """Fetch one Clover order and create/update the local record.
 
-    Returns one of ``"created"``, ``"updated"``, ``"skipped"``.
+def _orders_to_sync(merchant_id: str) -> tuple[list[dict], int]:
+    """Recent Clover orders worth syncing, newest first, plus a skip count.
+
+    Drops orders already handled locally and orders that aren't
+    online/pickup/delivery, then caps what's left at ``SYNC_ORDER_CAP``.  The
+    list endpoint already carries the order type, so none of this costs an
+    extra request.
     """
-    order_data = fetch_clover_order(merchant_id, order_uuid)
-    if order_data is None:
-        logger.warning("Could not fetch order %s from Clover — skipped", order_uuid)
-        return "skipped"
-
-    # Only process online/pickup/delivery orders
-    if not is_online_order(order_data):
-        ot = order_data.get("orderType") or {}
-        ot_name = ot.get("name") or ot.get("label") or "unknown"
-        logger.info(
-            "Order %s is not an online order (orderType=%s) — skipped",
-            order_uuid,
-            ot_name,
+    skip_ids = set(
+        Order.objects.exclude(status=Order.Status.PENDING).values_list(
+            "clover_order_id", flat=True
         )
-        return "skipped"
+    )
 
-    # Extract customer info
-    customer_name, customer_phone = extract_customer_info(order_data)
-    if not customer_name:
-        logger.info("Order %s has no customer name — skipped", order_uuid)
-        return "skipped"
-    if not customer_phone:
-        logger.info(
-            "Order %s (%s) has no customer phone — skipped",
-            order_uuid,
-            customer_name,
+    candidates: list[dict] = []
+    seen: set[str] = set()
+    skipped = 0
+    for order_data in list_recent_clover_orders(merchant_id):
+        order_uuid = order_data["id"]
+        if order_uuid in skip_ids or order_uuid in seen:
+            continue
+        if not is_online_order(order_data):
+            ot = order_data.get("orderType") or {}
+            logger.info(
+                "Order %s is not an online order (orderType=%s) — skipped",
+                order_uuid,
+                ot.get("name") or ot.get("label") or "unknown",
+            )
+            skipped += 1
+            continue
+        seen.add(order_uuid)
+        candidates.append(order_data)
+        if len(candidates) >= SYNC_ORDER_CAP:
+            break
+
+    return candidates, skipped
+
+
+def _save_orders(orders: list[Order]) -> tuple[int, int]:
+    """Insert or update *orders* in a single statement.
+
+    Returns ``(created, updated)``.  Only the customer and item fields are
+    refreshed on an existing row — ``status`` and ``notified_at`` are left
+    alone, so a sync can never undo a notification.
+    """
+    if not orders:
+        return 0, 0
+
+    order_ids = [order.clover_order_id for order in orders]
+    existing = set(
+        Order.objects.filter(clover_order_id__in=order_ids).values_list(
+            "clover_order_id", flat=True
         )
-        return "skipped"
+    )
+    Order.objects.bulk_create(
+        orders,
+        update_conflicts=True,
+        unique_fields=["clover_order_id"],
+        update_fields=["customer_name", "customer_phone", "items_summary"],
+    )
+    created = sum(1 for order_id in order_ids if order_id not in existing)
+    return created, len(order_ids) - created
 
-    items_summary = extract_items_summary(order_data)
 
-    # Create or update the local record
-    try:
-        order, created = Order.objects.update_or_create(
-            clover_order_id=order_uuid,
-            defaults={
-                "customer_name": customer_name,
-                "customer_phone": customer_phone,
-                "items_summary": items_summary,
-            },
+def _run_sync(merchant_id: str) -> dict:
+    """Pull recent Clover orders into local records and summarise the result.
+
+    Two requests cover the whole sync — the order list (with line items, order
+    types and customers expanded) and one sweep of the merchant's customers
+    for their phone numbers — so the cost no longer grows with the number of
+    orders.
+    """
+    candidates, skipped = _orders_to_sync(merchant_id)
+
+    # One phone lookup for the whole batch, instead of one call per customer
+    phone_map = fetch_customer_phone_map(
+        merchant_id,
+        {cid for order_data in candidates for cid in order_customer_ids(order_data)},
+    )
+
+    new_orders: list[Order] = []
+    for order_data in candidates:
+        attach_customer_phones(order_data, phone_map)
+        customer_name, customer_phone = extract_customer_info(order_data)
+        if not customer_name or not customer_phone:
+            logger.info(
+                "Order %s (%s) has no name or phone — skipped",
+                order_data["id"],
+                customer_name or "no customer",
+            )
+            skipped += 1
+            continue
+        new_orders.append(
+            Order(
+                clover_order_id=order_data["id"],
+                customer_name=customer_name,
+                customer_phone=customer_phone,
+                items_summary=extract_items_summary(order_data),
+            )
         )
-    except IntegrityError:
-        order = Order.objects.get(clover_order_id=order_uuid)
-        created = False
 
-    if created:
-        logger.info("Order %s created (%s, %s)", order_uuid, customer_name, customer_phone)
-        return "created"
-    logger.info("Order %s updated (%s, %s)", order_uuid, customer_name, customer_phone)
-    return "updated"
+    created, updated = _save_orders(new_orders)
+    logger.info(
+        "Sync complete: %d created, %d updated, %d skipped", created, updated, skipped
+    )
+    return {"created": created, "updated": updated, "skipped": skipped, "errors": 0}
 
 
 # ---------------------------------------------------------------------------
@@ -108,6 +167,9 @@ class OrderViewSet(viewsets.ModelViewSet):
 
     def get_queryset(self):
         qs = super().get_queryset()
+        if self.action == "list":
+            # Counting notifications here saves a query per row in the serializer
+            qs = qs.annotate(notification_count=Count("notifications"))
         status_filter = self.request.query_params.get("status")
         if status_filter:
             qs = qs.filter(status=status_filter)
@@ -127,49 +189,24 @@ class OrderViewSet(viewsets.ModelViewSet):
                 status=status.HTTP_503_SERVICE_UNAVAILABLE,
             )
 
-        merchant_id = settings.CLOVER_MERCHANT_ID
-        recent_orders = list_recent_clover_orders(merchant_id)
+        # A Refresh that lands while one is already running would only
+        # duplicate the work — report nothing new; the caller reloads the list.
+        if not _sync_lock.acquire(blocking=False):
+            logger.info("Sync already in progress — duplicate request ignored")
+            return Response({"created": 0, "updated": 0, "skipped": 0, "errors": 0})
 
-        # Orders already sent or cancelled are never re-fetched
-        skip_ids = set(
-            Order.objects.exclude(status=Order.Status.PENDING).values_list(
-                "clover_order_id", flat=True
+        try:
+            result = _run_sync(settings.CLOVER_MERCHANT_ID)
+        except Exception:
+            logger.exception("Order sync failed")
+            return Response(
+                {"error": "Sync failed — see the server logs."},
+                status=status.HTTP_502_BAD_GATEWAY,
             )
-        )
+        finally:
+            _sync_lock.release()
 
-        created = updated = skipped = errors = 0
-        processed = 0
-        for order in recent_orders:
-            if processed >= SYNC_ORDER_CAP:
-                break
-            order_uuid = order.get("id")
-            if not order_uuid or order_uuid in skip_ids:
-                continue
-            try:
-                result = _sync_clover_order(merchant_id, order_uuid)
-            except Exception:
-                logger.exception("Error syncing order %s", order_uuid)
-                result = "error"
-            processed += 1
-            if result == "created":
-                created += 1
-            elif result == "updated":
-                updated += 1
-            elif result == "skipped":
-                skipped += 1
-            else:
-                errors += 1
-
-        logger.info(
-            "Sync complete: %d created, %d updated, %d skipped, %d errors",
-            created, updated, skipped, errors,
-        )
-        return Response({
-            "created": created,
-            "updated": updated,
-            "skipped": skipped,
-            "errors": errors,
-        })
+        return Response(result)
 
     @action(detail=True, methods=["post"])
     def send(self, request, pk=None):

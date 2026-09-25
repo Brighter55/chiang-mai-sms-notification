@@ -10,6 +10,7 @@ import { toast } from "@/hooks/use-toast";
 interface UseOrdersReturn {
   orders: Order[];
   loading: boolean;
+  syncing: boolean;
   error: string | null;
   refresh: () => Promise<void>;
   sendSms: (orderId: number) => Promise<void>;
@@ -19,10 +20,18 @@ interface UseOrdersReturn {
 export function useOrders(): UseOrdersReturn {
   const [orders, setOrders] = useState<Order[]>([]);
   const [loading, setLoading] = useState(true);
+  const [syncing, setSyncing] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [sendingId, setSendingId] = useState<number | null>(null);
 
+  /** Reload the orders we already have. No Clover round trip, so this is fast. */
+  const loadOrders = useCallback(async () => {
+    const data = await fetchOrders();
+    setOrders(data.results);
+  }, []);
+
   const refresh = useCallback(async () => {
+    setSyncing(true);
     try {
       setError(null);
       // Pull new orders from Clover first, then reload the local list.
@@ -45,19 +54,24 @@ export function useOrders(): UseOrdersReturn {
           description: `${newOrUpdated} new or updated order${newOrUpdated > 1 ? "s" : ""}.`,
         });
       }
-      const data = await fetchOrders();
-      setOrders(data.results);
+      await loadOrders();
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to load orders");
     } finally {
-      setLoading(false);
+      setSyncing(false);
     }
-  }, []);
+  }, [loadOrders]);
 
-  // Initial load — a single fetch on mount, then manual refreshes only
+  // Show what we already have straight away, then pull from Clover in the
+  // background — opening the dashboard never waits on the Clover API.
   useEffect(() => {
+    loadOrders()
+      .catch((err) => {
+        setError(err instanceof Error ? err.message : "Failed to load orders");
+      })
+      .finally(() => setLoading(false));
     refresh();
-  }, [refresh]);
+  }, [loadOrders, refresh]);
 
   const sendSms = useCallback(
     async (orderId: number) => {
@@ -98,5 +112,5 @@ export function useOrders(): UseOrdersReturn {
     []
   );
 
-  return { orders, loading, error, refresh, sendSms, sendingId };
+  return { orders, loading, syncing, error, refresh, sendSms, sendingId };
 }

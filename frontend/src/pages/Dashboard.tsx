@@ -23,7 +23,8 @@ function isToday(dateStr: string): boolean {
 }
 
 export function Dashboard({ onLogout }: DashboardProps) {
-  const { orders, loading, error, refresh, sendSms, sendingId } = useOrders();
+  const { orders, loading, syncing, error, refresh, sendSms, sendingId } =
+    useOrders();
   const [showOlder, setShowOlder] = useState(false);
 
   const todayOrders = orders.filter((o) => isToday(o.created_at));
@@ -65,10 +66,10 @@ export function Dashboard({ onLogout }: DashboardProps) {
               variant="outline"
               size="sm"
               onClick={refresh}
-              disabled={loading}
+              disabled={loading || syncing}
             >
               <RefreshCcw
-                className={`mr-2 h-4 w-4 ${loading ? "animate-spin" : ""}`}
+                className={`mr-2 h-4 w-4 ${syncing ? "animate-spin" : ""}`}
               />
               Refresh
             </Button>
@@ -95,7 +96,7 @@ export function Dashboard({ onLogout }: DashboardProps) {
           </div>
         )}
 
-        {loading && orders.length === 0 ? (
+        {(loading || syncing) && orders.length === 0 ? (
           <div className="flex flex-col items-center justify-center py-20 text-muted-foreground">
             <div className="mb-4 flex h-14 w-14 items-center justify-center rounded-full bg-primary/10 text-primary">
               <BellRing className="h-7 w-7 animate-pulse" />
