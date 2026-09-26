@@ -188,18 +188,18 @@ def extract_customer_info(order_data: dict) -> tuple[str, str]:
     return name, _normalize_phone(_first_phone(customer))
 
 
-def attach_customer_phones(order_data: dict, phone_map: dict[str, str]) -> None:
-    """Fill in the phones looked up by ``fetch_customer_phone_map``.
+def attach_customer_data(order_data: dict, customer_map: dict[str, dict]) -> None:
+    """Fill in each of the order's customers from ``fetch_customer_map``.
 
-    Expanding an order returns its customers but not their phone numbers, so
-    any customer still missing one is patched from *phone_map*.
+    Expanding an order returns its customers as bare ``{id, href}`` references
+    — no name and no phone — so the fuller record is merged in here.  Merging
+    the whole record matters: the name lives only on the customer, and without
+    it the order gets skipped for having no customer.
     """
     for customer in order_data.get("customers") or []:
-        if customer.get("phoneNumbers"):
-            continue
-        phone = phone_map.get(customer.get("id"))
-        if phone:
-            customer["phoneNumbers"] = [{"phoneNumber": phone}]
+        full = customer_map.get(customer.get("id"))
+        if full:
+            customer.update(full)
 
 
 def extract_items_summary(order_data: dict) -> str:
@@ -282,18 +282,22 @@ def list_recent_clover_orders(merchant_id: str, limit: int = 100) -> list[dict]:
     return orders
 
 
-def fetch_customer_phone_map(merchant_id: str, customer_ids: set[str]) -> dict[str, str]:
-    """Map ``customer_id -> phone number`` for *customer_ids*.
+def fetch_customer_map(merchant_id: str, customer_ids: set[str]) -> dict[str, dict]:
+    """Map ``customer_id -> full customer record`` for *customer_ids*.
 
-    Clover has no "fetch these ids" endpoint, so rather than one request per
-    customer this pages through the merchant's customers once and stops as
-    soon as every wanted id has turned up.  Anything the sweep missed is then
-    fetched individually, so the result is always complete.
+    Orders carry only customer ids, and Clover has no "fetch these ids"
+    endpoint, so rather than one request per customer this pages through the
+    merchant's customers once and stops as soon as every wanted id has turned
+    up.  Anything the sweep missed is then fetched individually, so the result
+    is always complete.
+
+    The whole record is kept — not just the phone — because the customer's name
+    is the only place an order's name comes from.
     """
-    phones: dict[str, str] = {}
+    customers_by_id: dict[str, dict] = {}
     wanted = {cid for cid in customer_ids if cid}
     if not wanted:
-        return phones
+        return customers_by_id
 
     for page in range(CUSTOMER_MAX_PAGES):
         data = _call_clover(
@@ -309,21 +313,21 @@ def fetch_customer_phone_map(merchant_id: str, customer_ids: set[str]) -> dict[s
             break
         for customer in customers:
             cid = customer.get("id")
-            if cid in wanted:
-                phones.setdefault(cid, _first_phone(customer))
-        if wanted <= phones.keys() or len(customers) < CUSTOMER_PAGE_SIZE:
+            if cid in wanted and cid not in customers_by_id:
+                customers_by_id[cid] = customer
+        if wanted <= customers_by_id.keys() or len(customers) < CUSTOMER_PAGE_SIZE:
             break
 
     # Fallback for ids the sweep never reached (or a page that failed)
-    for cid in wanted - phones.keys():
+    for cid in wanted - customers_by_id.keys():
         customer = _call_clover(
             f"{merchant_id}/customers/{cid}",
             {"expand": "phoneNumbers"},
         )
         if customer:
-            phones[cid] = _first_phone(customer)
+            customers_by_id[cid] = customer
 
-    return phones
+    return customers_by_id
 
 
 # ---------------------------------------------------------------------------

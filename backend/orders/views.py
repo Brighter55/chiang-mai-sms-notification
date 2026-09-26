@@ -18,10 +18,10 @@ from .serializers import (
     OrderListSerializer,
 )
 from .services import (
-    attach_customer_phones,
+    attach_customer_data,
     extract_customer_info,
     extract_items_summary,
-    fetch_customer_phone_map,
+    fetch_customer_map,
     is_online_order,
     list_recent_clover_orders,
     order_customer_ids,
@@ -113,15 +113,15 @@ def _run_sync(merchant_id: str) -> dict:
     """
     candidates, skipped = _orders_to_sync(merchant_id)
 
-    # One phone lookup for the whole batch, instead of one call per customer
-    phone_map = fetch_customer_phone_map(
+    # One customer lookup for the whole batch, instead of one call per customer
+    customer_map = fetch_customer_map(
         merchant_id,
         {cid for order_data in candidates for cid in order_customer_ids(order_data)},
     )
 
     new_orders: list[Order] = []
     for order_data in candidates:
-        attach_customer_phones(order_data, phone_map)
+        attach_customer_data(order_data, customer_map)
         customer_name, customer_phone = extract_customer_info(order_data)
         if not customer_name or not customer_phone:
             logger.info(
