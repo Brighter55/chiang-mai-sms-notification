@@ -23,9 +23,16 @@ def _order(order_id: str, *, order_type: str = "Online", customer_id: str | None
         "lineItems": {"elements": [{"name": "Pad Thai", "quantity": 2}]},
     }
     if customer_id:
+        # Clover expands an order's customers to bare {id, href} references —
+        # no name, no phone. The fixture must match that or it hides bugs:
+        # an earlier version put the name in here, which masked a regression
+        # where synced orders were dropped for having "no customer".
         data["customers"] = {
             "elements": [
-                {"id": customer_id, "firstName": "Som", "lastName": "Chai"}
+                {
+                    "id": customer_id,
+                    "href": f"https://api.clover.com/v3/merchants/MID/customers/{customer_id}",
+                }
             ]
         }
     return data
@@ -74,6 +81,29 @@ class SyncCallCountTests(TestCase):
         # One list call + one customers sweep, regardless of order count
         self.assertEqual(len(self.calls), 2)
         self.assertEqual(Order.objects.count(), 20)
+
+    def test_customer_name_comes_from_the_lookup_not_the_order(self):
+        """The order's customer ref has no name — it must be merged in.
+
+        Without this the order is skipped as "no customer" and silently
+        vanishes from the dashboard.
+        """
+        self.listed_orders = [_order("o1", customer_id="c1")]
+        self.customers = [_customer("c1")]
+
+        result = views._run_sync("MID")
+
+        self.assertEqual(result["created"], 1)
+        self.assertEqual(Order.objects.get().customer_name, "Som Chai")
+
+    def test_a_customer_the_lookup_cannot_resolve_is_skipped(self):
+        self.listed_orders = [_order("o1", customer_id="c1")]
+        self.customers = []  # sweep finds nobody, and the fallback finds nobody
+
+        result = views._run_sync("MID")
+
+        self.assertEqual(result["created"], 0)
+        self.assertEqual(result["skipped"], 1)
 
     def test_phones_are_normalised_to_e164(self):
         self.listed_orders = [_order("o1", customer_id="c1")]
@@ -195,7 +225,7 @@ class SyncEndpointTests(TestCase):
         call.assert_not_called()
 
 
-class CustomerPhoneMapTests(TestCase):
+class CustomerMapTests(TestCase):
     """The bulk sweep is what replaced the per-customer request."""
 
     def test_stops_early_once_every_wanted_id_is_found(self):
@@ -206,12 +236,24 @@ class CustomerPhoneMapTests(TestCase):
             return {"elements": [_customer("c1"), _customer("c2")]}
 
         with mock.patch.object(services, "_call_clover", side_effect=fake_call):
-            phones = services.fetch_customer_phone_map("MID", {"c1", "c2"})
+            customers = services.fetch_customer_map("MID", {"c1", "c2"})
 
         self.assertEqual(len(calls), 1)
-        self.assertEqual(set(phones), {"c1", "c2"})
+        self.assertEqual(set(customers), {"c1", "c2"})
+
+    def test_keeps_the_whole_record_not_just_the_phone(self):
+        """The name is only on the customer record — dropping it loses orders."""
+
+        def fake_call(path, params=None):
+            return {"elements": [_customer("c1")]}
+
+        with mock.patch.object(services, "_call_clover", side_effect=fake_call):
+            customers = services.fetch_customer_map("MID", {"c1"})
+
+        self.assertEqual(customers["c1"]["firstName"], "Som")
+        self.assertEqual(customers["c1"]["lastName"], "Chai")
 
     def test_no_lookup_at_all_when_nothing_is_wanted(self):
         with mock.patch.object(services, "_call_clover") as call:
-            self.assertEqual(services.fetch_customer_phone_map("MID", set()), {})
+            self.assertEqual(services.fetch_customer_map("MID", set()), {})
         call.assert_not_called()

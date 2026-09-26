@@ -96,10 +96,17 @@ silently dropped.
    (already notified/cancelled), drops non-online orders via `is_online_order()`
    — which is free now, because the order type came back expanded — and caps
    the rest at `SYNC_ORDER_CAP = 50` in `views.py`.
-3. `fetch_customer_phone_map()` resolves every customer on the batch in one
-   paged sweep of `/customers?expand=phoneNumbers` (stops early once all wanted
-   ids are seen; falls back to individual lookups for anything missed).
-   `attach_customer_phones()` patches those onto the orders.
+3. `fetch_customer_map()` resolves every customer on the batch in one paged
+   sweep of `/customers?expand=phoneNumbers` (stops early once all wanted ids
+   are seen; falls back to individual lookups for anything missed).
+   `attach_customer_data()` merges the full record onto each order's customers.
+
+   **Gotcha:** expanding an order returns its customers as bare `{id, href}`
+   references — **no name and no phone**. The name exists only on the customer
+   record. Merge the *whole* record, not just the phone: an earlier version
+   copied only `phoneNumbers` across, so every synced order was skipped as
+   "no customer" and silently vanished from the dashboard. Build test fixtures
+   with bare references to match, or they will hide exactly this bug.
 4. `extract_customer_info()`: skips if there's no customer name or no phone.
    Phone is normalized to E.164 (`phonenumbers`, `DEFAULT_PHONE_REGION` default `US`).
 5. `extract_items_summary()` builds `"Name x2, Other"` (first 5 items).
