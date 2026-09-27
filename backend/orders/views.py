@@ -168,8 +168,16 @@ class OrderViewSet(viewsets.ModelViewSet):
     def get_queryset(self):
         qs = super().get_queryset()
         if self.action == "list":
-            # Counting notifications here saves a query per row in the serializer
-            qs = qs.annotate(notification_count=Count("notifications"))
+            # Counting notifications here saves a query per row in the serializer.
+            #
+            # order_by is required, not decorative. Annotating with an aggregate
+            # makes Django drop Meta.ordering, leaving the SQL with no ORDER BY at
+            # all. DRF paginates this endpoint and the dashboard only ever reads
+            # page 1, so an unordered list is not guaranteed to hold the newest
+            # orders — which shows up as "orders are missing from the dashboard".
+            qs = qs.annotate(notification_count=Count("notifications")).order_by(
+                "-created_at"
+            )
         status_filter = self.request.query_params.get("status")
         if status_filter:
             qs = qs.filter(status=status_filter)
