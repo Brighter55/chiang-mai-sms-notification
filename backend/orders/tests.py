@@ -1,17 +1,27 @@
-"""Tests for the Clover sync path.
+"""Tests for the Clover sync path and the SMS notify path.
 
 The sync used to cost one Clover request per order (plus one per customer),
-which is what made a dashboard refresh take ~20 seconds.  These tests pin the
+which is what made a dashboard refresh take ~20 seconds.  Those tests pin the
 cost to a constant so it can't drift back.
+
+The SMS tests cover the code that texts real customers.  Nothing here touches
+Twilio — the client is stubbed — but the outcomes are pinned hard, because a
+regression on this path either texts someone twice or marks an order notified
+when no message was ever sent.
 """
 
+from datetime import timedelta
 from unittest import mock
 
+from django.conf import settings
 from django.contrib.auth.models import User
 from django.test import TestCase, override_settings
+from django.utils import timezone
+from rest_framework.test import APIRequestFactory
+from twilio.base.exceptions import TwilioRestException
 
 from . import services, views
-from .models import Order
+from .models import NotificationLog, Order
 
 
 def _order(order_id: str, *, order_type: str = "Online", customer_id: str | None = None):
@@ -257,3 +267,287 @@ class CustomerMapTests(TestCase):
         with mock.patch.object(services, "_call_clover") as call:
             self.assertEqual(services.fetch_customer_map("MID", set()), {})
         call.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# SMS notification
+# ---------------------------------------------------------------------------
+
+def _notifiable_order(**overrides) -> Order:
+    """A saved Order that is ready to be notified."""
+    fields = {
+        "clover_order_id": "o1",
+        "customer_name": "Som Chai",
+        "customer_phone": "+13145551234",
+    }
+    fields.update(overrides)
+    return Order.objects.create(**fields)
+
+
+@override_settings(
+    TWILIO_ACCOUNT_SID="AC_test",
+    TWILIO_AUTH_TOKEN="token_test",
+    TWILIO_PHONE_NUMBER="+13145550000",
+    MERCHANT_NAME="Chiang Mai",
+)
+class SmsMessageTests(TestCase):
+    """The message body is a compliance surface, so its shape is pinned."""
+
+    def test_carries_the_opt_out_line(self):
+        message = services.build_sms_message(_notifiable_order())
+        self.assertIn("Reply STOP to opt out.", message)
+
+    def test_names_the_merchant_and_says_why(self):
+        message = services.build_sms_message(_notifiable_order())
+        self.assertIn("Chiang Mai", message)
+        self.assertIn("ready for pickup", message)
+
+    def test_never_includes_the_customer_name_or_the_items(self):
+        """The body is deliberately generic.
+
+        A name or an item list would land on whatever lock screen the message
+        reaches. That is a privacy decision, not an oversight — don't "improve"
+        the template by adding them.
+        """
+        order = _notifiable_order(
+            customer_name="Som Chai",
+            items_summary="Pad Thai x2, Thai Tea",
+        )
+
+        message = services.build_sms_message(order)
+
+        self.assertNotIn("Som Chai", message)
+        self.assertNotIn("Pad Thai", message)
+
+
+@override_settings(
+    TWILIO_ACCOUNT_SID="AC_test",
+    TWILIO_AUTH_TOKEN="token_test",
+    TWILIO_PHONE_NUMBER="+13145550000",
+    MERCHANT_NAME="Chiang Mai",
+)
+class SendOrderNotificationTests(TestCase):
+    """Every outcome of the send path. Twilio is stubbed, never called."""
+
+    def _stub_twilio(self, *, sid: str = "SM_TEST_1", error: Exception | None = None):
+        """Patch the Twilio client; returns the stub so call args can be asserted."""
+        client = mock.MagicMock()
+        if error is not None:
+            client.messages.create.side_effect = error
+        else:
+            client.messages.create.return_value.sid = sid
+        patcher = mock.patch.object(services, "Client", return_value=client)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        return client
+
+    def test_success_sends_marks_the_order_notified_and_records_the_sid(self):
+        order = _notifiable_order()
+        client = self._stub_twilio(sid="SM_ABC")
+
+        log = services.send_order_notification(order)
+
+        self.assertEqual(log.status, NotificationLog.Status.SENT)
+        self.assertEqual(log.twilio_sid, "SM_ABC")
+        self.assertEqual(log.recipient_phone, "+13145551234")
+
+        order.refresh_from_db()
+        self.assertEqual(order.status, Order.Status.NOTIFIED)
+        self.assertIsNotNone(order.notified_at)
+
+        sent = client.messages.create.call_args.kwargs
+        self.assertEqual(sent["to"], order.customer_phone)
+        self.assertEqual(sent["from_"], settings.TWILIO_PHONE_NUMBER)
+        self.assertEqual(sent["body"], log.message_body)
+
+    def test_a_twilio_error_fails_the_log_and_leaves_the_order_pending(self):
+        """A failed send must not look like a successful one.
+
+        If the order flipped to notified here, staff would stop chasing a
+        customer who was never actually told — which is the entire point of the
+        dashboard.
+        """
+        order = _notifiable_order()
+        self._stub_twilio(
+            error=TwilioRestException(400, "https://api.twilio.com/x", "Bad number")
+        )
+
+        log = services.send_order_notification(order)
+
+        self.assertEqual(log.status, NotificationLog.Status.FAILED)
+        self.assertIn("Bad number", log.error_message)
+
+        order.refresh_from_db()
+        self.assertEqual(order.status, Order.Status.PENDING)
+        self.assertIsNone(order.notified_at)
+
+    def test_an_unexpected_error_is_handled_the_same_way(self):
+        order = _notifiable_order()
+        self._stub_twilio(error=RuntimeError("socket exploded"))
+
+        log = services.send_order_notification(order)
+
+        self.assertEqual(log.status, NotificationLog.Status.FAILED)
+        self.assertEqual(log.error_message, "Unexpected error sending SMS")
+        order.refresh_from_db()
+        self.assertEqual(order.status, Order.Status.PENDING)
+
+    def test_the_log_is_written_even_when_the_send_fails(self):
+        """The log is the audit trail, so it has to outlive a failed attempt."""
+        self._stub_twilio(error=RuntimeError("boom"))
+
+        services.send_order_notification(_notifiable_order())
+
+        self.assertEqual(NotificationLog.objects.count(), 1)
+
+
+@override_settings(
+    TWILIO_ACCOUNT_SID="AC_test",
+    TWILIO_AUTH_TOKEN="token_test",
+    TWILIO_PHONE_NUMBER="+13145550000",
+    MERCHANT_NAME="Chiang Mai",
+)
+class SendEndpointTests(TestCase):
+    """POST /api/orders/{id}/send/ — the guards and the status mapping."""
+
+    def setUp(self):
+        self.client.force_login(User.objects.create_user("staff", password="pw"))
+
+    def _stub_twilio(self, *, error: Exception | None = None):
+        client = mock.MagicMock()
+        if error is not None:
+            client.messages.create.side_effect = error
+        else:
+            client.messages.create.return_value.sid = "SM_ENDPOINT"
+        patcher = mock.patch.object(services, "Client", return_value=client)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        return client
+
+    def test_a_successful_send_returns_200(self):
+        order = _notifiable_order()
+        self._stub_twilio()
+
+        response = self.client.post(f"/api/orders/{order.id}/send/")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["status"], "sent")
+
+    def test_a_failed_send_returns_502(self):
+        order = _notifiable_order()
+        self._stub_twilio(
+            error=TwilioRestException(500, "https://api.twilio.com/x", "nope")
+        )
+
+        response = self.client.post(f"/api/orders/{order.id}/send/")
+
+        self.assertEqual(response.status_code, 502)
+        self.assertEqual(response.json()["status"], "failed")
+
+    def test_an_already_notified_order_is_rejected_without_texting_again(self):
+        order = _notifiable_order(status=Order.Status.NOTIFIED)
+        client = self._stub_twilio()
+
+        response = self.client.post(f"/api/orders/{order.id}/send/")
+
+        self.assertEqual(response.status_code, 409)
+        client.messages.create.assert_not_called()
+
+    def test_an_order_without_a_phone_is_rejected_without_texting(self):
+        order = _notifiable_order(customer_phone="")
+        client = self._stub_twilio()
+
+        response = self.client.post(f"/api/orders/{order.id}/send/")
+
+        self.assertEqual(response.status_code, 400)
+        client.messages.create.assert_not_called()
+
+    def test_sending_requires_a_session(self):
+        order = _notifiable_order()
+        self.client.logout()
+        client = self._stub_twilio()
+
+        response = self.client.post(f"/api/orders/{order.id}/send/")
+
+        self.assertIn(response.status_code, (401, 403))
+        client.messages.create.assert_not_called()
+        order.refresh_from_db()
+        self.assertEqual(order.status, Order.Status.PENDING)
+
+
+# ---------------------------------------------------------------------------
+# Order list ordering
+# ---------------------------------------------------------------------------
+
+class OrderListOrderingTests(TestCase):
+    """GET /api/orders/ must come back newest-first.
+
+    Not cosmetic. Django drops ``Meta.ordering`` the moment a queryset is
+    annotated with an aggregate, and ``get_queryset`` annotates for the list
+    action — so the SQL had no ORDER BY at all. DRF paginates this endpoint and
+    the dashboard only ever reads page 1, so an unordered list is not guaranteed
+    to contain the newest orders. That presents as "orders are missing from the
+    dashboard", which is the symptom these tests exist to prevent.
+    """
+
+    def setUp(self):
+        self.client.force_login(User.objects.create_user("staff", password="pw"))
+
+    def _saved_order(self, name: str, *, minutes_ago: int) -> Order:
+        order = Order.objects.create(
+            clover_order_id=f"o-{name}",
+            customer_name=name,
+            customer_phone="+13145551234",
+        )
+        # created_at is auto_now_add, so it can only be backdated via update().
+        Order.objects.filter(pk=order.pk).update(
+            created_at=timezone.now() - timedelta(minutes=minutes_ago)
+        )
+        order.refresh_from_db()
+        return order
+
+    def test_the_list_comes_back_newest_first(self):
+        self._saved_order("oldest", minutes_ago=120)
+        self._saved_order("middle", minutes_ago=60)
+        self._saved_order("newest", minutes_ago=1)
+
+        response = self.client.get("/api/orders/")
+
+        self.assertEqual(response.status_code, 200)
+        names = [row["customer_name"] for row in response.json()["results"]]
+        self.assertEqual(names, ["newest", "middle", "oldest"])
+
+    def test_the_list_queryset_is_explicitly_ordered(self):
+        """Guards the trap itself, not just the symptom.
+
+        Asserting on ``.ordered`` catches the missing ORDER BY deterministically,
+        rather than relying on whichever order a particular database happens to
+        return rows in.
+        """
+        request = APIRequestFactory().get("/api/orders/")
+        view = views.OrderViewSet()
+        # Normally set by ViewSetMixin.as_view(); needed for initialize_request to
+        # resolve self.action, which is what turns the annotate on.
+        view.action_map = {"get": "list"}
+        view.request = view.initialize_request(request)
+        view.format_kwarg = None
+
+        queryset = view.get_queryset()
+
+        # Guard against a vacuous pass: the annotation is precisely what drops
+        # Meta.ordering, so if it is absent this test proves nothing.
+        self.assertEqual(view.action, "list")
+        self.assertIn("notification_count", queryset.query.annotations)
+        self.assertTrue(queryset.ordered)
+
+    def test_pagination_does_not_repeat_or_skip_orders(self):
+        """The dashboard reads one page, so a page must be a stable slice."""
+        for i in range(views.SYNC_ORDER_CAP + 10):
+            self._saved_order(f"o{i}", minutes_ago=i)
+
+        first = self.client.get("/api/orders/").json()["results"]
+        second = self.client.get("/api/orders/?page=2").json()["results"]
+
+        ids = [row["id"] for row in first + second]
+        self.assertEqual(len(ids), views.SYNC_ORDER_CAP + 10)
+        self.assertEqual(len(set(ids)), len(ids), "an order appeared on two pages")

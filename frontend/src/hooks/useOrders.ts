@@ -65,6 +65,11 @@ export function useOrders(): UseOrdersReturn {
   // Show what we already have straight away, then pull from Clover in the
   // background — opening the dashboard never waits on the Clover API.
   useEffect(() => {
+    // Deliberate. State is set after an await inside loadOrders, not
+    // synchronously; the rule cannot see through the useCallback. Removing this
+    // call would make the first paint wait on the Clover sync in refresh(), which
+    // is the exact behaviour this effect exists to avoid.
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     loadOrders()
       .catch((err) => {
         setError(err instanceof Error ? err.message : "Failed to load orders");

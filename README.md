@@ -31,13 +31,15 @@ Password-protected dashboard, live order cards, one-click SMS via Twilio. No dev
 Staff clicks "Refresh" in the dashboard
   ▼
 POST /api/orders/sync/
-  1. GET /v3/merchants/{mId}/orders?filter=modifiedTime>=…   recent orders (default: last 2 days)
+  1. GET /v3/merchants/{mId}/orders?filter=modifiedTime>=…
+       &expand=lineItems,orderType,orderCart.orderType,customers
+       → recent orders (default: last 2 days), with everything the sync needs
   2. Skip any order already notified or cancelled locally
-  3. For each candidate:
-       GET /v3/merchants/{mId}/orders/{orderId}?expand=lineItems,orderType,orderCart.orderType
-       → then enrich customers: GET /v3/merchants/{mId}/customers/{cId}?expand=phoneNumbers
-  4. Drop Dine-In orders — only online / pickup / delivery order types are kept
-  5. Drop orders with no customer name or no phone number
+  3. Drop Dine-In orders — only online / pickup / delivery order types are kept
+  4. Drop orders with no customer name or no phone number
+  5. GET /v3/merchants/{mId}/customers?expand=phoneNumbers
+       → ONE paged sweep for every customer on the batch. The order endpoint
+         returns customers as bare {id} references with no name or phone.
   6. Summarize line items ("Pad Thai x2, …") → save/update in PostgreSQL
   ▼
 Staff clicks "Send" on an order card
@@ -48,6 +50,11 @@ POST /api/orders/{id}/send/  →  Twilio SMS  →  order status: pending → not
 Orders are pulled with a **merchant-generated Clover API token**
 from Clover only when Refresh is clicked. Orders already sent or cancelled are
 never re-fetched.
+
+**The whole sync is exactly two Clover requests**, however many orders come back.
+That is a hard constraint, not an accident: fetching orders or customers
+individually took ~20s and tripped Clover's 429 rate limit, and because a failed
+call returns `None`, rate-limited orders were silently dropped. Tests pin it.
 
 The SMS message is generic (no customer name, no item list), e.g.:
 
@@ -145,6 +152,20 @@ The frontend dev server proxies `/api` requests to `http://127.0.0.1:8000`.
 There's a project skill that starts Django + Vite + an ngrok tunnel and watches
 the backend log for SMS activity — run **`/start-local-test`**. `DEBUG=True`
 auto-allows ngrok hosts so session cookies work over the tunnel.
+
+### Automated checks
+
+```sh
+python scripts/check.py           # Django check, migrations, backend tests,
+                                  # ruff, frontend lint + build
+python scripts/check.py --e2e     # ...plus the Playwright dashboard suite
+```
+
+CI runs exactly this script, so a green local run means a green build. The E2E
+suite drives the real dashboard in a browser — logging in, rendering orders,
+refreshing, sending an SMS — against a throwaway database, with Clover and Twilio
+both intercepted so nothing leaves the machine. See the `/verify-dashboard` skill.
+First run needs `npx playwright install chromium`.
 
 ## Switching to PostgreSQL
 

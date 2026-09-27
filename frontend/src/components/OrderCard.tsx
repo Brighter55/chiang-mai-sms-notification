@@ -48,6 +48,7 @@ export function OrderCard({ order, onSendSms, isSending }: OrderCardProps) {
 
   return (
     <Card
+      data-testid="order-card"
       className={cn(
         "relative overflow-hidden border-border/40 bg-surface-low shadow-none transition-opacity hover:border-border hover:shadow-md",
         order.status === "notified" && "opacity-75"

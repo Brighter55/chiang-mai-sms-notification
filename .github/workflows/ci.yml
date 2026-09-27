@@ -1,0 +1,100 @@
+name: CI
+
+# Runs the exact same gates as `python scripts/check.py`, by invoking that
+# script rather than repeating its commands. Duplicating them here would let the
+# two drift, and the value of the script is the guarantee that green locally
+# means green in CI.
+#
+# One job rather than a backend/frontend split on purpose: the whole run takes
+# seconds, and parallelism is not worth reintroducing that drift.
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  # The six fast gates. Seconds, not minutes.
+  check:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      # requirements-dev.txt, not requirements.txt — it adds ruff, which the
+      # backend-lint gate needs. Production installs only requirements.txt.
+      - name: Install backend dependencies
+        run: pip install -r backend/requirements-dev.txt
+
+      - name: Install frontend dependencies
+        run: npm ci
+        working-directory: frontend
+
+      # check.py points both databases at sqlite and falls back to the
+      # interpreter running it, so no venv or service containers are needed.
+      - name: Run all gates
+        run: python scripts/check.py
+
+  # Separate job so a flake can be re-run on its own without redoing the fast
+  # gates — the usual reason to split it out, not speed. Runs the same npm
+  # script that `check.py --e2e` invokes, so the command is defined once.
+  e2e:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      # The Playwright run boots Django itself (migrating and seeding a
+      # throwaway sqlite database), so the backend deps are needed here too.
+      - name: Install backend dependencies
+        run: pip install -r backend/requirements-dev.txt
+
+      - name: Install frontend dependencies
+        run: npm ci
+        working-directory: frontend
+
+      - name: Install Playwright browsers
+        run: npx playwright install --with-deps chromium
+        working-directory: frontend
+
+      - name: Run the dashboard suite
+        run: npm run test:e2e
+        working-directory: frontend
+
+      # The spec's failure artifacts, useful when CI-only flakes show up.
+      - name: Upload traces
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-report
+          path: frontend/test-results/
+          retention-days: 7

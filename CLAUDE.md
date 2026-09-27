@@ -73,7 +73,25 @@ npm run dev        # http://localhost:5173 — proxies /api → 127.0.0.1:8000
 End-to-end test with a reachable phone number (Django + Vite + ngrok, SMS watch):
 invoke the **`/start-local-test`** skill. `DEBUG=True` auto-allows ngrok hosts.
 
-Lint/build: `npm run lint`, `npm run build` (`tsc -b && vite build` → `dist/`).
+### Verify a change
+
+```bash
+python scripts/check.py           # the six fast gates, ~10s
+python scripts/check.py --e2e     # ...plus the Playwright suite, ~25s
+```
+
+Gates: Django system check, pending migrations, backend tests, backend lint (ruff),
+frontend lint, frontend build — and with `--e2e`, the browser suite. All of them run
+even if an earlier one fails, so one pass gives the whole picture; exit code 0 only if
+everything passed.
+
+`.github/workflows/ci.yml` invokes **this exact script** rather than repeating its
+commands, so green locally means green in CI. Run it before claiming a change works —
+and if you add a gate, add it to `scripts/check.py` only.
+
+Individual gates: `npm run lint`, `npm run build` (`tsc -b && vite build` → `dist/`).
+Backend dev tooling (ruff) lives in `requirements-dev.txt`; production installs only
+`requirements.txt`. Playwright browsers need `npx playwright install chromium` once.
 
 ## Key flows (read before editing)
 
@@ -142,6 +160,18 @@ go through one `requests.Session` for connection reuse.
 
 ## Skills & project settings
 
+- **`.claude/feature-map.md` — read this first when given a bug report.** Maps
+  symptoms to files and documents the traps this codebase has already hit,
+  including the fix that *looks* right and is wrong (e.g. "clean up" the CSRF
+  scheme, re-fetch orders individually).
+- `/reproduce-bug` — turn a reported symptom into a **failing browser test**, read the
+  captured evidence (page snapshot, screenshot, backend logs), fix it, and leave the
+  test behind as a regression guard. Use this instead of poking at the app by hand.
+- `/verify-dashboard` — drive the real dashboard in a browser (login, orders, refresh,
+  SMS, console errors) instead of reasoning about the frontend from source. Required
+  reading before changing anything in `frontend/`.
 - `/start-local-test` — start Django + Vite + ngrok and watch for SMS activity.
 - `.claude/settings.local.json` allows `WebSearch` and `WebFetch(domain:docs.clover.com)`.
+  It is **gitignored** — machine-local only. Shared settings belong in
+  `.claude/settings.json`.
 - Design/UI work happens against Stitch (MCP) design-system prototypes — e.g. the warm-dark dashboard redesign.

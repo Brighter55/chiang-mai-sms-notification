@@ -92,7 +92,7 @@ def _call_clover(path: str, params: dict | None = None) -> dict | None:
         return resp.json()
     except requests.Timeout:
         logger.error("Timeout fetching %s", url)
-    except requests.HTTPError as exc:
+    except requests.HTTPError:
         logger.error(
             "Clover API error %s: %s — %s",
             url, resp.status_code, resp.text[:500],
