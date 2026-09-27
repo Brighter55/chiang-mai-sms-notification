@@ -1,6 +1,5 @@
-from django.conf import settings
-
 import phonenumbers
+from django.conf import settings
 from rest_framework import serializers
 
 from .models import OptInSubscriber
@@ -27,9 +26,12 @@ class OptInSubscriberSerializer(serializers.ModelSerializer):
         try:
             parsed = phonenumbers.parse(value, settings.DEFAULT_PHONE_REGION)
         except phonenumbers.NumberParseException:
+            # `from None` — the parser's exception is an implementation detail;
+            # the caller gets the clean validation message instead of a chained
+            # traceback.
             raise serializers.ValidationError(
                 "Enter a valid phone number (e.g., 314-555-0123)."
-            )
+            ) from None
 
         if not phonenumbers.is_valid_number(parsed):
             raise serializers.ValidationError(

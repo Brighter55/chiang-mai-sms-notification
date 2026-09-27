@@ -12,12 +12,15 @@ type ToasterToast = ToastProps & {
   action?: ToastActionElement;
 };
 
-const actionTypes = {
-  ADD_TOAST: "ADD_TOAST",
-  UPDATE_TOAST: "UPDATE_TOAST",
-  DISMISS_TOAST: "DISMISS_TOAST",
-  REMOVE_TOAST: "REMOVE_TOAST",
-} as const;
+// Declared as a type rather than a const object: nothing reads these at
+// runtime — the reducer only ever compares against string literals, so a
+// value here would be dead weight the linter rightly flags.
+type ActionType = {
+  ADD_TOAST: "ADD_TOAST";
+  UPDATE_TOAST: "UPDATE_TOAST";
+  DISMISS_TOAST: "DISMISS_TOAST";
+  REMOVE_TOAST: "REMOVE_TOAST";
+};
 
 let count = 0;
 
@@ -25,8 +28,6 @@ function genId() {
   count = (count + 1) % Number.MAX_SAFE_INTEGER;
   return count.toString();
 }
-
-type ActionType = typeof actionTypes;
 
 type Action =
   | {

@@ -26,8 +26,13 @@ function AuthenticatedApp() {
     }
   }, []);
 
-  // Check for existing session on mount
+  // Check for existing session on mount.
   useEffect(() => {
+    // Deliberate: this is session bootstrap — the state update happens after the
+    // fetchMe() await, not synchronously, and the rule cannot see through the
+    // useCallback. The alternative it implies (a framework data-loader) is not
+    // available to a plain client-side SPA.
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     checkAuth();
   }, [checkAuth]);
 

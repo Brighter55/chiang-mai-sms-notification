@@ -1,0 +1,4 @@
+# Development / CI tooling. Not installed in production — the deploy only needs
+# requirements.txt.
+-r requirements.txt
+ruff>=0.16
