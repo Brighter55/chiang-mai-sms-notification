@@ -62,7 +62,9 @@ test("opening the dashboard syncs exactly once", async ({ page }) => {
   await signIn(page);
   await expect(page.getByText(TODAY_PENDING)).toBeVisible();
   // Refresh is disabled while syncing — enabled means the cycle has finished.
-  await expect(page.getByRole("button", { name: "Refresh" })).toBeEnabled();
+  await expect(
+    page.getByRole("button", { name: "Refresh", exact: true })
+  ).toBeEnabled();
 
   expect(syncCalls).toBe(1);
 });

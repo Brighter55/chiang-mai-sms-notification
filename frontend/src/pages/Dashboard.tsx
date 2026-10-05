@@ -1,9 +1,11 @@
 import { useState } from "react";
-import { BellRing, Calendar, ChevronDown, ChevronUp, LogOut, RefreshCcw } from "lucide-react";
+import { BellRing, Calendar, ChevronDown, ChevronUp, LogOut, RefreshCcw, Timer } from "lucide-react";
+import { AutoRefreshSettings } from "@/components/AutoRefreshSettings";
 import { OrderCard } from "@/components/OrderCard";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { ScrollArea } from "@/components/ui/scroll-area";
+import { useIntervalSettings } from "@/hooks/useIntervalSettings";
 import { useOrders } from "@/hooks/useOrders";
 import type { Order } from "@/lib/api";
 
@@ -23,9 +25,15 @@ function isToday(dateStr: string): boolean {
 }
 
 export function Dashboard({ onLogout }: DashboardProps) {
+  const { syncMinutes, listMinutes, setSyncMinutes, setListMinutes } =
+    useIntervalSettings();
   const { orders, loading, syncing, error, refresh, sendSms, sendingId } =
-    useOrders();
+    useOrders({
+      syncIntervalMs: syncMinutes * 60_000,
+      listIntervalMs: listMinutes * 60_000,
+    });
   const [showOlder, setShowOlder] = useState(false);
+  const [showSettings, setShowSettings] = useState(false);
 
   const todayOrders = orders.filter((o) => isToday(o.created_at));
   const olderOrders = orders.filter((o) => !isToday(o.created_at));
@@ -73,11 +81,33 @@ export function Dashboard({ onLogout }: DashboardProps) {
               />
               Refresh
             </Button>
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={() => setShowSettings((open) => !open)}
+              aria-expanded={showSettings}
+              aria-controls="auto-refresh-settings"
+              aria-label="Auto-refresh settings"
+              title="Auto-refresh settings"
+            >
+              <Timer className="h-4 w-4" />
+            </Button>
             <Button variant="ghost" size="sm" onClick={onLogout} title="Sign out">
               <LogOut className="h-4 w-4" />
             </Button>
           </div>
         </div>
+
+        {/* Inside the sticky header so the boxes stay put while the list scrolls. */}
+        {showSettings && (
+          <AutoRefreshSettings
+            id="auto-refresh-settings"
+            syncMinutes={syncMinutes}
+            listMinutes={listMinutes}
+            onSyncChange={setSyncMinutes}
+            onListChange={setListMinutes}
+          />
+        )}
       </header>
 
       {/* Content */}

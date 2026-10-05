@@ -28,7 +28,11 @@ export async function signIn(page: Page) {
   await page.locator("#username").fill(E2E_USERNAME);
   await page.locator("#password").fill(E2E_PASSWORD);
   await page.getByRole("button", { name: "Sign in" }).click();
-  await expect(page.getByRole("button", { name: "Refresh" })).toBeVisible();
+  // exact: role-name matching is substring-based by default, so a plain
+  // "Refresh" also hits the "Auto-refresh settings" button beside it.
+  await expect(
+    page.getByRole("button", { name: "Refresh", exact: true })
+  ).toBeVisible();
 }
 
 /**
