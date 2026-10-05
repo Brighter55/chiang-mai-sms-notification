@@ -75,6 +75,15 @@ invoke the **`/start-local-test`** skill. `DEBUG=True` auto-allows ngrok hosts.
 
 ### Verify a change
 
+**Write the failing test first.** For any new feature or behavior change, add
+the test, run it, and confirm it fails against the unmodified code *before*
+writing the implementation — then make it pass. `check.py` proves a change
+works; it cannot tell whether the test would have caught the bug, so a test
+written after the implementation is unverified coverage. If the order was
+missed, prove the new tests are load-bearing by running only them against the
+pre-change code (`git stash push -- <implementation file>`) and report the
+failure count.
+
 ```bash
 python scripts/check.py           # the six fast gates, ~10s
 python scripts/check.py --e2e     # ...plus the Playwright suite, ~25s
