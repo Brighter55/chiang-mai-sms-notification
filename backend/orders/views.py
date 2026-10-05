@@ -42,10 +42,10 @@ _sync_lock = threading.Lock()
 def _orders_to_sync(merchant_id: str) -> tuple[list[dict], int]:
     """Recent Clover orders worth syncing, newest first, plus a skip count.
 
-    Drops orders already handled locally and orders that aren't
-    online/pickup/delivery, then caps what's left at ``SYNC_ORDER_CAP``.  The
-    list endpoint already carries the order type, so none of this costs an
-    extra request.
+    Drops orders already handled locally and orders whose type isn't one we
+    notify for (see ``is_online_order``), then caps what's left at
+    ``SYNC_ORDER_CAP``.  The list endpoint already carries the order type, so
+    none of this costs an extra request.
     """
     skip_ids = set(
         Order.objects.exclude(status=Order.Status.PENDING).values_list(
@@ -62,10 +62,15 @@ def _orders_to_sync(merchant_id: str) -> tuple[list[dict], int]:
             continue
         if not is_online_order(order_data):
             ot = order_data.get("orderType") or {}
+            # Log both fields verbatim: when a real order type is missing from
+            # the dashboard, this line is how we learn the exact string Clover
+            # sends for it (see _ACCEPTED_ORDER_TYPE_KEYWORDS).
             logger.info(
-                "Order %s is not an online order (orderType=%s) — skipped",
+                "Order %s has an order type we don't notify for "
+                "(name=%r label=%r) — skipped",
                 order_uuid,
-                ot.get("name") or ot.get("label") or "unknown",
+                ot.get("name"),
+                ot.get("label"),
             )
             skipped += 1
             continue

@@ -111,9 +111,12 @@ silently dropped.
    `expand=lineItems,orderType,orderCart.orderType,customers`. That single
    response carries everything the sync needs.
 2. `_orders_to_sync()` drops orders whose local status isn't `pending`
-   (already notified/cancelled), drops non-online orders via `is_online_order()`
-   — which is free now, because the order type came back expanded — and caps
-   the rest at `SYNC_ORDER_CAP = 50` in `views.py`.
+   (already notified/cancelled), drops orders whose type isn't one we notify
+   for via `is_online_order()` — online/pickup/delivery plus the merchant's
+   "Take Out" and "Waiting Here" types, matched tolerantly against both
+   `orderType.name` and `.label` (add a name to `_ACCEPTED_ORDER_TYPE_KEYWORDS`
+   to accept another). This costs nothing extra, because the order type came
+   back expanded, and caps the rest at `SYNC_ORDER_CAP = 50` in `views.py`.
 3. `fetch_customer_map()` resolves every customer on the batch in one paged
    sweep of `/customers?expand=phoneNumbers` (stops early once all wanted ids
    are seen; falls back to individual lookups for anything missed).

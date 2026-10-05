@@ -118,7 +118,7 @@ all-zeros response.
 |---|---|---|
 | Clover lists come back as `{elements: [...]}` *or* `[]` *or* missing | `services.py:_extract_list` (L28) | `data["elements"]` directly — `KeyError` |
 | A phone that won't parse falls back to `+<digits>` | `services.py:_normalize_phone` (L44) | Raising instead — breaks existing order data |
-| Order-type matching uses substring + case-insensitive checks to catch e.g. "Clover In-store Pickup" | `services.py:is_online_order` (L140) | Exact `== "Online"` — drops real orders |
+| Order-type matching normalizes case/punctuation and substring-matches `_ACCEPTED_ORDER_TYPE_KEYWORDS`, checking **both** `name` and `label` | `services.py:is_online_order` (L164) | Exact `== "Online"` — drops real orders; or reading only `name`, which misses a type Clover put in `label` |
 | Clover sometimes rejects the `filter` syntax; there's a one-shot retry without it | `services.py:list_recent_clover_orders` (L248) | Removing the retry |
 | There is no "fetch these customer ids" endpoint — it's a sweep with early stop, then per-id fallback | `services.py:fetch_customer_map` (L285) | Assuming one request per id |
 | Uniqueness must be re-checked **after** phone normalization | `subscribers/serializers.py:43` | Trusting DRF's `UniqueValidator` — it runs on raw input |

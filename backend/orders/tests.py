@@ -58,6 +58,48 @@ def _customer(customer_id: str, phone: str = "3145551234"):
     }
 
 
+class OrderTypeMatchingTests(TestCase):
+    """Which Clover order types the dashboard pulls in.
+
+    The merchant's own types ("Take Out", "Waiting Here") must sync and
+    dine-in must not.  Matching is deliberately tolerant: order types are
+    merchant-defined, so the same type gets spelled inconsistently.
+    """
+
+    def test_accepted_order_types(self):
+        for order_type in (
+            "Online",
+            "Online Order",
+            "In-store Pickup",
+            "Clover In-store Pickup",
+            "Pick-Up",
+            "Delivery",
+            "Take Out",
+            "Take-Out",
+            "Takeout",
+            "Waiting Here",
+            "waiting here",
+        ):
+            with self.subTest(order_type=order_type):
+                order = _order("o1", order_type=order_type)
+                self.assertTrue(services.is_online_order(order))
+
+    def test_dropped_order_types(self):
+        for order_type in ("Dine-In", "Dine In", "Catering", "Unknown", ""):
+            with self.subTest(order_type=order_type):
+                order = _order("o1", order_type=order_type)
+                self.assertFalse(services.is_online_order(order))
+
+    def test_label_is_checked_when_name_is_missing(self):
+        """Clover doesn't always populate ``name``; the label must still count."""
+        order = {"orderType": {"label": "Waiting Here"}}
+        self.assertTrue(services.is_online_order(order))
+
+    def test_order_cart_order_type_is_checked(self):
+        order = {"orderCart": {"orderType": {"name": "Take Out"}}}
+        self.assertTrue(services.is_online_order(order))
+
+
 class SyncCallCountTests(TestCase):
     """A refresh must not cost a Clover request per order."""
 
@@ -134,6 +176,25 @@ class SyncCallCountTests(TestCase):
         self.assertEqual(result["created"], 1)
         self.assertEqual(result["skipped"], 5)
         self.assertEqual(len(self.calls), 2)
+
+    def test_take_out_and_waiting_here_orders_reach_the_dashboard(self):
+        """The merchant's own order types sync alongside In-store Pickup."""
+        self.listed_orders = [
+            _order("takeout", order_type="Take Out", customer_id="c1"),
+            _order("waiting", order_type="Waiting Here", customer_id="c2"),
+            _order("dine", order_type="Dine-In", customer_id="c3"),
+        ]
+        self.customers = [_customer("c1"), _customer("c2")]
+
+        result = views._run_sync("MID")
+
+        self.assertEqual(result["created"], 2)
+        self.assertEqual(result["skipped"], 1)
+        self.assertEqual(len(self.calls), 2)
+        self.assertEqual(
+            set(Order.objects.values_list("clover_order_id", flat=True)),
+            {"takeout", "waiting"},
+        )
 
     def test_orders_without_a_usable_phone_are_skipped(self):
         self.listed_orders = [_order("o1", customer_id="c1")]

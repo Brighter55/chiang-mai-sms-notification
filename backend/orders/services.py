@@ -14,6 +14,7 @@ from .models import NotificationLog, Order
 logger = logging.getLogger(__name__)
 
 _NON_DIGIT_RE = re.compile(r"[^\d]+")
+_NON_ALNUM_RE = re.compile(r"[^a-z0-9]+")
 
 # One session for every Clover call — reuses the connection instead of paying
 # for a fresh TLS handshake on each request.
@@ -137,11 +138,36 @@ def _first_phone(customer: dict) -> str:
     return (phones[0].get("phoneNumber") or "").strip()
 
 
-def is_online_order(order_data: dict) -> bool:
-    """Return ``True`` if the Clover order is an online/pickup/delivery order.
+# Order-type names that mean "the customer is coming to collect this" — the
+# only orders the dashboard offers to text about.  Clover order types are
+# merchant-defined, so these are matched as substrings against a normalized
+# form of the name: "Take Out", "Take-Out" and "Takeout" all collapse to
+# "takeout", and Clover's own "Clover In-store Pickup" still matches on
+# "pickup".  To teach the sync a new Clover order type, add its name here.
+_ACCEPTED_ORDER_TYPE_KEYWORDS = (
+    "online",
+    "pickup",
+    "delivery",
+    "takeout",
+    "waitinghere",
+)
 
-    Checks ``orderType.name`` and ``orderType.label`` (top-level and inside
-    ``orderCart``).
+
+def _normalize_order_type(value: str) -> str:
+    """Lowercase *value* and strip punctuation so spelling variants collapse.
+
+    ``"Take-Out"``, ``"take out"`` and ``"Takeout"`` all become ``"takeout"``.
+    """
+    return _NON_ALNUM_RE.sub("", value.lower())
+
+
+def is_online_order(order_data: dict) -> bool:
+    """Return ``True`` if the Clover order is one the dashboard should show.
+
+    Covers online/pickup/delivery orders plus the merchant's own "Take Out"
+    and "Waiting Here" types.  Checks both ``name`` and ``label`` — Clover
+    populates the display name in whichever it has, and the two can differ —
+    at the top level and inside ``orderCart``.
     """
     order_types_to_check: list[dict] = []
 
@@ -157,12 +183,12 @@ def is_online_order(order_data: dict) -> bool:
         order_types_to_check.append(ot2)
 
     for ot in order_types_to_check:
-        type_str = (ot.get("name") or ot.get("label") or "").lower()
-        if type_str in ("online", "pickup", "pick-up", "delivery", "online order"):
-            return True
-        # Also catch things like "Clover In-store Pickup"
-        if "pickup" in type_str or "pick up" in type_str:
-            return True
+        for field in ("name", "label"):
+            type_str = _normalize_order_type(ot.get(field) or "")
+            if type_str and any(
+                keyword in type_str for keyword in _ACCEPTED_ORDER_TYPE_KEYWORDS
+            ):
+                return True
 
     return False
 
