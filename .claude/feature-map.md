@@ -26,6 +26,7 @@ the dashboard") and you need to find the code fast without flailing.
 | Dashboard renders but never updates | `frontend/src/hooks/useOrders.ts` |
 | Dashboard never refreshes on its own, or refreshes too often | The two auto-refresh timers — `hooks/useOrders.ts` (`runRefresh` modes) and `hooks/useIntervalSettings.ts` (1–60 min, per-browser) |
 | Orders render, SMS button misbehaves | `frontend/src/components/OrderCard.tsx` |
+| Nothing on the page is clickable until a reload, after closing a dialog | Trap 13 — the `modal` prop on the menu that opened it |
 
 ---
 
@@ -221,6 +222,46 @@ already on the wire still resolves afterwards.
   response lands last and reverts the optimistic update.
 - **Right fix:** both `sendSms` and `sendReview` bump `latestLoadRef` as they start, which
   is what retires the in-flight response.
+
+### 13. A modal dialog opened from a modal menu freezes the whole page
+
+Reported as *"clicking Cancel in the Send Review dialog leaves nothing clickable"*. The
+Cancel button is innocent — the damage is done when the dialog **opens**.
+
+`@radix-ui/react-dismissable-layer` saves and restores `document.body.style.pointerEvents`
+with **no stack**:
+
+```js
+originalBodyPointerEvents = ownerDocument.body.style.pointerEvents;
+ownerDocument.body.style.pointerEvents = "none";
+// on cleanup:
+ownerDocument.body.style.pointerEvents = originalBodyPointerEvents;
+```
+
+`DropdownMenu` defaults to `modal`, and both the modal menu and the AlertDialog use that
+layer with outside pointer events disabled while open. So:
+
+1. The menu opens → body becomes `"none"`.
+2. **Send Review** mounts the dialog while the menu is still mounted (Radix's `Presence`
+   unmounts it a commit later) → the dialog captures `"none"` as its baseline.
+3. The menu unmounts and restores `""`.
+4. The dialog closes and restores the value from step 2: **`"none"`**.
+
+`pointer-events` is inherited, so `none` on `<body>` disables every button, link and menu
+on the page, permanently, until a reload. It bites the confirm path exactly as hard as
+Cancel — Cancel is just where someone noticed.
+
+- **Wrong fix:** defer the dialog open with `setTimeout`/`requestAnimationFrame` so the menu
+  unmounts first. It papers over the ordering, is timing-dependent, and leaves the trap
+  armed for the next dialog.
+- **Right fix:** `<DropdownMenu modal={false}>`. The menu then never touches the body value,
+  so the dialog's save/restore is symmetric. A one-item action menu has no reason to freeze
+  the rest of the dashboard anyway.
+- **General rule:** never open a modal dialog from a modal dropdown/popover without
+  `modal={false}` on the menu. Any two overlapping Radix layers can corrupt this value.
+- Guarded by `review.spec.ts` — *"cancelling/sending a review leaves the page usable"*,
+  which asserts `<body>` is not left at `pointer-events: none` **and** that a click on the
+  dashboard still works.
 
 ---
 

@@ -111,6 +111,58 @@ test("cancelling the dialog sends nothing", async ({ page }) => {
   expect(reviewCalls).toBe(0);
 });
 
+/**
+ * Radix's DismissableLayer saves and restores `document.body.style.pointerEvents`
+ * with no stack, so a dialog that mounts while a modal menu is still mounted
+ * captures "none" and puts it back when it closes — leaving every control on the
+ * page dead until a reload. See trap 13 in .claude/feature-map.md.
+ */
+async function expectPageStillUsable(page: Page) {
+  // Names the defect, so a failure reads as "body is still blocked" rather than
+  // an opaque click timeout. Reads the computed style, because that is what
+  // actually gates a click — and what `<body>` passes down to every child.
+  await expect(page.locator("body")).not.toHaveCSS("pointer-events", "none");
+}
+
+test("cancelling the review dialog leaves the page usable", async ({ page }) => {
+  await stubSync(page);
+  await stubReview(page, {});
+
+  await signIn(page);
+
+  await openMenu(page, TODAY_PENDING);
+  await page.getByRole("menuitem", { name: "Send Review" }).click();
+  await page.getByRole("alertdialog").getByRole("button", { name: "Cancel" }).click();
+  await expect(page.getByRole("alertdialog")).toBeHidden();
+
+  await expectPageStillUsable(page);
+
+  // The assertion that actually matters: the dashboard responds to a click.
+  await openMenu(page, TODAY_PENDING);
+  await expect(page.getByRole("menuitem", { name: "Send Review" })).toBeVisible();
+});
+
+test("sending a review leaves the page usable", async ({ page }) => {
+  // Same defect, reached through the other button — the corruption happens when
+  // the dialog opens, so Cancel is only where it was noticed.
+  await stubSync(page);
+  await stubReview(page, {});
+
+  await signIn(page);
+
+  await openMenu(page, TODAY_PENDING);
+  await page.getByRole("menuitem", { name: "Send Review" }).click();
+  await page.getByRole("alertdialog").getByRole("button", { name: "Send review" }).click();
+
+  await expect(page.getByText("Review request sent!")).toBeVisible();
+  await expect(page.getByRole("alertdialog")).toBeHidden();
+
+  await expectPageStillUsable(page);
+
+  await openMenu(page, TODAY_PENDING);
+  await expect(page.getByRole("menuitem", { name: "Send Review" })).toBeVisible();
+});
+
 test("an order with no phone cannot request a review", async ({ page }) => {
   // The same invariant no-phone.spec.ts guards for Send SMS: a click that
   // appears to do nothing is worse than a disabled control.

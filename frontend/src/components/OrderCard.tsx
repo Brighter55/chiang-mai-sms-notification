@@ -89,7 +89,13 @@ export function OrderCard({
                 and asking someone to review food they never received is worse
                 than useless. */}
             {order.status !== "cancelled" && (
-              <DropdownMenu>
+              // modal={false} is load-bearing, not cosmetic. A modal menu puts
+              // `pointer-events: none` on <body> while it is open, and the dialog
+              // below mounts before the menu has unmounted — so the dialog
+              // captures that "none" as its baseline and restores it on close,
+              // which kills every click on the page until a reload.
+              // See feature-map trap 13.
+              <DropdownMenu modal={false}>
                 <DropdownMenuTrigger asChild>
                   <Button
                     variant="ghost"
