@@ -16,6 +16,8 @@ the dashboard") and you need to find the code fast without flailing.
 | Order missing from the dashboard | Two independent causes: the sync chain (`orders/views.py:_orders_to_sync`, `services.py:is_online_order`, `attach_customer_data`) — and the list's ordering (trap 8) |
 | Refresh is slow, or orders vanish in bulk | The 2-call invariant — `orders/views.py:_run_sync`, `services.py:fetch_customer_map` |
 | "Send" button fails / 409 / 400 | `orders/views.py:OrderViewSet.send` (L211), `services.py:send_order_notification` (L346) |
+| "Send Review" missing, or the dialog never warns about a repeat | `orders/views.py:OrderViewSet.review` + `review_last_sent_at` in `get_queryset`; `frontend/src/components/OrderCard.tsx` |
+| A customer reported as already reviewed who was never texted | The `sent()` predicate — `orders/models.py:ReviewRequestQuerySet` |
 | SMS arrives but the order stays "pending" | `services.py:send_order_notification` L374-391 |
 | Login fails, or 403 on every write | The in-body CSRF scheme — `orders/views.py:LoginView` (L250), `frontend/src/lib/api.ts` |
 | Works locally, 403 in production | `CORS_ALLOWED_ORIGINS` vs `CSRF_TRUSTED_ORIGINS` — `config/settings.py` L93-126 |
@@ -170,9 +172,55 @@ Under React `StrictMode` (`main.tsx:8`) dev mode doubles all of it.
    `notified`. If a failure ever marked it notified, staff would stop chasing a customer
    who was never actually told.
 8. The SMS body stays generic — **no customer name, no item list** (privacy: the message
-   lands on lock screens).
+   lands on lock screens). Both templates, not just the pickup one. The *dialog* naming
+   the customer is fine; that never leaves staff's screen.
+9. A review send **never** touches `Order.status` or `notified_at`. A review ask and a
+   pickup notice are different facts about a customer, and letting one imply the other
+   would hide an order nobody has chased.
+10. **Every** send attempt is audited — `NotificationLog` for pickup messages,
+    `ReviewRequest` for review messages. A review counts as sent only with a `twilio_sid`,
+    because the row is written before Twilio is called and a crash mid-send must not look
+    like a delivered message.
 
-Invariants 1–8 are all pinned by `orders/tests.py`. Breaking one should turn the suite red.
+Invariants 1–10 are all pinned by `orders/tests.py`. Breaking one should turn the suite red.
+
+### 10. A second annotation can silently rewrite the GROUP BY
+
+`OrderViewSet.get_queryset` annotates the list with `Count("notifications")` and, for review
+state, a `Subquery`.
+
+- **Wrong fix:** wrap the review subquery in `Coalesce(...)` — the obvious way to turn a
+  NULL into `0` for the frontend. `Func.get_group_by_cols()` makes Django append the whole
+  expression to the `GROUP BY` clause (`GROUP BY …, 11`), so the query groups by a
+  per-row subquery. It works on SQLite, which is what `check.py` and CI run, and is then
+  never exercised against Postgres, which is what production runs.
+- **Also wrong:** a second join-backed `Count(...)`. Two joins through one `annotate` is a
+  Cartesian product, so `notification_count` doubles the moment any review row exists.
+- **Right fix:** a **bare** correlated `Subquery`, no `Func` wrapper, and no count field at
+  all — `review_last_sent_at` answers the question on its own.
+  `OrderReviewStateTests.test_review_rows_do_not_inflate_the_notification_count` is the guard.
+
+### 11. A review row is written before Twilio is called
+
+`send_review_request` inserts the row as `sent` optimistically, so a crash still leaves an
+audit trail — the same shape as the pickup path.
+
+- **Wrong fix:** treat `status=sent` as "this customer was asked". A process that dies
+  between the INSERT and `messages.create` leaves exactly that, for a text that never went
+  out, and staff would be warned off re-asking forever.
+- **Right fix:** `ReviewRequest.objects.sent()` — `status=sent` **and** a non-null
+  `twilio_sid` — used by both the view and the tests so they cannot drift.
+
+### 12. The sends retire in-flight polls; the poll guard alone does not
+
+`runRefresh` refuses to *start* a poll while a send is in flight, but a `GET /api/orders/`
+already on the wire still resolves afterwards.
+
+- **Wrong fix:** rely on the `sendingIdRef` guard alone. `loadOrders` only discards a
+  response when a newer load has begun, and none can begin during a send — so the stale
+  response lands last and reverts the optimistic update.
+- **Right fix:** both `sendSms` and `sendReview` bump `latestLoadRef` as they start, which
+  is what retires the in-flight response.
 
 ---
 
@@ -204,6 +252,7 @@ Uncovered, in rough order of risk:
 | GET/DELETE | `/api/orders/{id}/` | session |
 | POST | `/api/orders/sync/` | session |
 | POST | `/api/orders/{id}/send/` | session |
+| POST | `/api/orders/{id}/review/` | session |
 | GET | `/api/logs/` | session |
 | POST | `/api/opt-in/` | **public** → landing DB |
 | — | `/admin/` | staff |

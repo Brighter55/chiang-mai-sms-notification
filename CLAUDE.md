@@ -154,6 +154,22 @@ go through one `requests.Session` for connection reuse.
 - Message body (`build_sms_message`) is generic: no customer name, no items. Ends with `Reply STOP to opt out.`
 - Response 200 on sent / 502 on failed, body = the `NotificationLog`.
 
+### Send review request — `POST /api/orders/{id}/review/` (auth required)
+- 503 if `GOOGLE_REVIEW_URL` is blank (mirrors `sync`'s config guard), 400 if no customer
+  phone, else 200 sent / 502 failed — body = the `ReviewRequest`.
+- **No 409 guard, unlike `send`.** Asking a customer twice is a decision the dashboard puts
+  to staff in a confirmation dialog, so the API accepts it. The dialog warns using
+  `review_last_sent_at` from the order list.
+- **Never touches `Order.status`/`notified_at`.** Those describe the pickup notice; a review
+  ask is a separate fact, and conflating them would hide an order nobody has chased.
+- `send_review_request()` writes a `ReviewRequest` row, not a `NotificationLog`: reusing
+  that table would change `notification_count`, the nested `notifications` list on the
+  detail serializer, and `GET /api/logs/`, all of which assume SMS-only.
+- "Already asked" is **per phone**, not per order — a regular who orders twice must not be
+  asked again by accident. Hence `ReviewRequest.objects.sent()` (sent **and** a real
+  `twilio_sid`, since the row is written before Twilio is called) and the `order` FK is
+  `SET_NULL`, so deleting an old order cannot erase the fact that this customer was asked.
+
 ### Opt-in — `POST /api/opt-in/` (public, → landing DB)
 `OptInCreateView` validates + normalizes the phone with `phonenumbers`, enforces uniqueness **after** normalization (the DRF `UniqueValidator` runs on the raw input), then stores on the `landing` DB via the router.
 
