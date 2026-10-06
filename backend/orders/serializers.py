@@ -1,6 +1,6 @@
 from rest_framework import serializers
 
-from .models import NotificationLog, Order
+from .models import NotificationLog, Order, ReviewRequest
 
 
 class NotificationLogSerializer(serializers.ModelSerializer):
@@ -19,11 +19,30 @@ class NotificationLogSerializer(serializers.ModelSerializer):
         read_only_fields = fields
 
 
+class ReviewRequestSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = ReviewRequest
+        fields = [
+            "id",
+            "order",
+            "recipient_phone",
+            "message_body",
+            "status",
+            "twilio_sid",
+            "error_message",
+            "created_at",
+        ]
+        read_only_fields = fields
+
+
 class OrderListSerializer(serializers.ModelSerializer):
     """Compact representation for the order list."""
 
     # Annotated by OrderViewSet.get_queryset — one query for the whole page
     notification_count = serializers.IntegerField(read_only=True)
+    # When this order's *phone* was last asked for a review, or null. Keyed on
+    # the phone, so a repeat customer carries it on every order they place.
+    review_last_sent_at = serializers.DateTimeField(read_only=True)
 
     class Meta:
         model = Order
@@ -37,6 +56,7 @@ class OrderListSerializer(serializers.ModelSerializer):
             "created_at",
             "notified_at",
             "notification_count",
+            "review_last_sent_at",
         ]
         read_only_fields = fields
 

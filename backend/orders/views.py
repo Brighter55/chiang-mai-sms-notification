@@ -3,7 +3,7 @@ import threading
 
 from django.conf import settings
 from django.contrib.auth import authenticate, login, logout
-from django.db.models import Count
+from django.db.models import Count, OuterRef, Subquery
 from django.middleware.csrf import get_token
 from rest_framework import status, viewsets
 from rest_framework.decorators import action
@@ -11,11 +11,12 @@ from rest_framework.permissions import AllowAny
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
-from .models import NotificationLog, Order
+from .models import NotificationLog, Order, ReviewRequest
 from .serializers import (
     NotificationLogSerializer,
     OrderDetailSerializer,
     OrderListSerializer,
+    ReviewRequestSerializer,
 )
 from .services import (
     attach_customer_data,
@@ -26,6 +27,7 @@ from .services import (
     list_recent_clover_orders,
     order_customer_ids,
     send_order_notification,
+    send_review_request,
 )
 
 logger = logging.getLogger(__name__)
@@ -180,9 +182,24 @@ class OrderViewSet(viewsets.ModelViewSet):
             # all. DRF paginates this endpoint and the dashboard only ever reads
             # page 1, so an unordered list is not guaranteed to hold the newest
             # orders — which shows up as "orders are missing from the dashboard".
-            qs = qs.annotate(notification_count=Count("notifications")).order_by(
-                "-created_at"
-            )
+            #
+            # The review state is a correlated Subquery, not a second Count():
+            # another join-backed aggregate would multiply the rows the first one
+            # counts, and notification_count would silently double. It has to stay
+            # a bare Subquery too — wrapping it in Coalesce() or any other Func
+            # makes Django append it to the GROUP BY clause.
+            #
+            # "Already asked" is per phone, so this correlates on the phone rather
+            # than on the order: a regular who orders twice sees the state on both.
+            qs = qs.annotate(
+                notification_count=Count("notifications"),
+                review_last_sent_at=Subquery(
+                    ReviewRequest.objects.sent()
+                    .filter(recipient_phone=OuterRef("customer_phone"))
+                    .order_by("-created_at")
+                    .values("created_at")[:1]
+                ),
+            ).order_by("-created_at")
         status_filter = self.request.query_params.get("status")
         if status_filter:
             qs = qs.filter(status=status_filter)
@@ -243,6 +260,40 @@ class OrderViewSet(viewsets.ModelViewSet):
         response_status = (
             status.HTTP_200_OK
             if notification.status == NotificationLog.Status.SENT
+            else status.HTTP_502_BAD_GATEWAY
+        )
+        return Response(serializer.data, status=response_status)
+
+    @action(detail=True, methods=["post"])
+    def review(self, request, pk=None):
+        """Text the customer a Google review link.
+
+        Two deliberate differences from ``send`` above. There is no
+        409-if-already-done guard, because asking twice is a legitimate decision
+        the dashboard puts to staff in a confirmation dialog — the API must not
+        refuse the send they then confirm. And the pickup status is not consulted
+        at all: a review is usually asked for after collection, which is exactly
+        when the order is already notified.
+        """
+        order = self.get_object()
+
+        if not settings.GOOGLE_REVIEW_URL:
+            return Response(
+                {"error": "Google review link not configured. Set GOOGLE_REVIEW_URL."},
+                status=status.HTTP_503_SERVICE_UNAVAILABLE,
+            )
+
+        if not order.customer_phone:
+            return Response(
+                {"error": "Order has no customer phone number."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        review_request = send_review_request(order)
+        serializer = ReviewRequestSerializer(review_request)
+        response_status = (
+            status.HTTP_200_OK
+            if review_request.status == ReviewRequest.Status.SENT
             else status.HTTP_502_BAD_GATEWAY
         )
         return Response(serializer.data, status=response_status)
