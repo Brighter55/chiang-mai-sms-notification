@@ -17,8 +17,17 @@ export const E2E_PASSWORD = "e2e-password";
 
 /** The default seeded orders, from orders/management/commands/seed_e2e.py. */
 export const TODAY_PENDING = "Pad Thai x2, Thai Tea";
+/**
+ * Notified *and* already asked for a review — the seed records a sent review
+ * against this order's phone, so the "send again?" branch of the dialog can be
+ * driven from real database state instead of a stub.
+ */
 export const TODAY_NOTIFIED = "Green Curry";
 export const OLDER_PENDING = "Pad See Ew";
+/** No phone number, so nothing can be sent to them by either route. */
+export const NO_PHONE_ITEMS = "Khao Soi";
+/** Cancelled — the one status that offers no overflow menu at all. */
+export const CANCELLED_ITEMS = "Thai Fried Rice";
 
 export const EMPTY_SYNC = { created: 0, updated: 0, skipped: 0, errors: 0 };
 
@@ -67,6 +76,35 @@ export async function stubSend(
 ) {
   const status = options.status ?? "sent";
   await page.route("**/api/orders/*/send/", (route) => {
+    options.onCall?.();
+    return route.fulfill({
+      status: status === "sent" ? 200 : 502,
+      contentType: "application/json",
+      body: JSON.stringify({
+        id: 1,
+        order: 1,
+        recipient_phone: "+13145551234",
+        message_body: "stubbed by the E2E harness",
+        status,
+        twilio_sid: status === "sent" ? "SM_STUBBED" : null,
+        error_message: options.errorMessage ?? null,
+        created_at: new Date().toISOString(),
+      }),
+    });
+  });
+}
+
+/** Stub the review send so no message can leave the machine. */
+export async function stubReview(
+  page: Page,
+  options: {
+    status?: "sent" | "failed";
+    errorMessage?: string | null;
+    onCall?: () => void;
+  } = {}
+) {
+  const status = options.status ?? "sent";
+  await page.route("**/api/orders/*/review/", (route) => {
     options.onCall?.();
     return route.fulfill({
       status: status === "sent" ? 200 : 502,

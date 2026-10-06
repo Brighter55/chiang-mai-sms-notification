@@ -48,7 +48,25 @@ export interface Order {
   created_at: string;
   notified_at: string | null;
   notification_count: number;
+  /**
+   * When this order's *phone* was last sent a review request, or null.
+   * Keyed on the phone, so a repeat customer carries it on every order they
+   * place — the staff member opening the newest one still sees they were asked.
+   */
+  review_last_sent_at: string | null;
   notifications?: NotificationLog[];
+}
+
+export interface ReviewRequest {
+  id: number;
+  /** Null when the order it referred to has since been deleted. */
+  order: number | null;
+  recipient_phone: string;
+  message_body: string;
+  status: "sent" | "failed";
+  twilio_sid: string | null;
+  error_message: string | null;
+  created_at: string;
 }
 
 export interface NotificationLog {
@@ -153,6 +171,16 @@ export function fetchOrder(id: number): Promise<Order> {
 
 export function sendSms(orderId: number): Promise<NotificationLog> {
   return request(`/orders/${orderId}/send/`, { method: "POST" });
+}
+
+/**
+ * Text the order's customer a Google review link.
+ *
+ * Unlike `sendSms` this never 409s: asking twice is a decision the confirmation
+ * dialog puts to staff, so the API accepts it.
+ */
+export function sendReview(orderId: number): Promise<ReviewRequest> {
+  return request(`/orders/${orderId}/review/`, { method: "POST" });
 }
 
 export interface SyncResult {

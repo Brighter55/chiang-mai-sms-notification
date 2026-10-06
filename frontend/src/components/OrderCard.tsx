@@ -1,11 +1,14 @@
 import {
   CheckCircle2,
   Clock,
+  EllipsisVertical,
   Loader2,
   MessageSquare,
   Phone,
+  Star,
   User,
 } from "lucide-react";
+import { useState } from "react";
 import type { Order } from "@/lib/api";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -16,22 +19,22 @@ import {
   CardHeader,
   CardTitle,
 } from "@/components/ui/card";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
+import { SendReviewDialog } from "@/components/SendReviewDialog";
+import { timeAgo } from "@/lib/time";
 import { cn } from "@/lib/utils";
 
 interface OrderCardProps {
   order: Order;
   onSendSms: (orderId: number) => void;
   isSending: boolean;
-}
-
-function timeAgo(dateStr: string): string {
-  const diff = Date.now() - new Date(dateStr).getTime();
-  const mins = Math.floor(diff / 60_000);
-  if (mins < 1) return "just now";
-  if (mins < 60) return `${mins}m ago`;
-  const hours = Math.floor(mins / 60);
-  if (hours < 24) return `${hours}h ago`;
-  return `${Math.floor(hours / 24)}d ago`;
+  onSendReview: (orderId: number) => void;
+  isSendingReview: boolean;
 }
 
 const statusConfig: Record<
@@ -43,8 +46,15 @@ const statusConfig: Record<
   cancelled: { label: "Cancelled", variant: "muted" },
 };
 
-export function OrderCard({ order, onSendSms, isSending }: OrderCardProps) {
+export function OrderCard({
+  order,
+  onSendSms,
+  isSending,
+  onSendReview,
+  isSendingReview,
+}: OrderCardProps) {
   const { label, variant } = statusConfig[order.status];
+  const [confirmReview, setConfirmReview] = useState(false);
 
   return (
     <Card
@@ -73,9 +83,38 @@ export function OrderCard({ order, onSendSms, isSending }: OrderCardProps) {
               </CardTitle>
             )}
           </div>
-          <Badge variant={variant} className="shrink-0">
-            {label}
-          </Badge>
+          <div className="flex shrink-0 items-center gap-1">
+            <Badge variant={variant}>{label}</Badge>
+            {/* Cancelled orders get no menu: there is nothing left to act on,
+                and asking someone to review food they never received is worse
+                than useless. */}
+            {order.status !== "cancelled" && (
+              <DropdownMenu>
+                <DropdownMenuTrigger asChild>
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    className="h-7 w-7 p-0 text-muted-foreground"
+                    aria-label="More actions"
+                    title="More actions"
+                  >
+                    <EllipsisVertical className="h-4 w-4" />
+                  </Button>
+                </DropdownMenuTrigger>
+                <DropdownMenuContent align="end">
+                  <DropdownMenuItem
+                    // Disabled rather than hidden, so the menu explains itself
+                    // instead of a click that appears to do nothing.
+                    disabled={!order.customer_phone || isSendingReview}
+                    onSelect={() => setConfirmReview(true)}
+                  >
+                    <Star className="h-4 w-4" />
+                    Send Review
+                  </DropdownMenuItem>
+                </DropdownMenuContent>
+              </DropdownMenu>
+            )}
+          </div>
         </div>
 
         <div className="grid grid-cols-2 divide-x divide-border/60 overflow-hidden rounded-md border border-border/40 bg-background/60 text-xs text-muted-foreground">
@@ -98,6 +137,11 @@ export function OrderCard({ order, onSendSms, isSending }: OrderCardProps) {
           <span>Ordered {timeAgo(order.created_at)}</span>
           {order.notified_at && (
             <span>· Notified {timeAgo(order.notified_at)}</span>
+          )}
+          {/* Falsy, not `=== null`: a stub that omits the field entirely has to
+              read as "never asked" rather than render "Review sent NaN". */}
+          {order.review_last_sent_at && (
+            <span>· Review sent {timeAgo(order.review_last_sent_at)}</span>
           )}
         </div>
       </CardContent>
@@ -128,6 +172,20 @@ export function OrderCard({ order, onSendSms, isSending }: OrderCardProps) {
           </p>
         )}
       </CardFooter>
+
+      {/* A sibling of the menu, never a child of its content: Radix unmounts the
+          menu on select, and nesting the two makes their focus traps fight.
+          Portalled, so the card's `overflow-hidden` cannot clip it. */}
+      <SendReviewDialog
+        open={confirmReview}
+        onOpenChange={setConfirmReview}
+        customerName={order.customer_name}
+        reviewSentAt={order.review_last_sent_at}
+        onConfirm={() => {
+          setConfirmReview(false);
+          onSendReview(order.id);
+        }}
+      />
     </Card>
   );
 }
