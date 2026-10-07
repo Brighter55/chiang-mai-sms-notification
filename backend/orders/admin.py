@@ -1,6 +1,6 @@
 from django.contrib import admin
 
-from .models import NotificationLog, Order
+from .models import NotificationLog, Order, ReviewRequest
 
 
 @admin.register(Order)
@@ -23,6 +23,20 @@ class NotificationLogAdmin(admin.ModelAdmin):
     list_display = [
         "order",
         "recipient_phone",
+        "status",
+        "twilio_sid",
+        "created_at",
+    ]
+    list_filter = ["status", "created_at"]
+    search_fields = ["recipient_phone", "twilio_sid"]
+    readonly_fields = ["created_at"]
+
+
+@admin.register(ReviewRequest)
+class ReviewRequestAdmin(admin.ModelAdmin):
+    list_display = [
+        "recipient_phone",
+        "order",
         "status",
         "twilio_sid",
         "created_at",

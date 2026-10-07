@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
   fetchOrders,
+  sendReview as sendReviewApi,
   sendSms as sendSmsApi,
   syncOrders,
   type Order,
@@ -15,6 +16,8 @@ interface UseOrdersReturn {
   refresh: () => Promise<void>;
   sendSms: (orderId: number) => Promise<void>;
   sendingId: number | null;
+  sendReview: (orderId: number) => Promise<void>;
+  reviewSendingId: number | null;
 }
 
 /**
@@ -43,11 +46,13 @@ export function useOrders({
   const [syncing, setSyncing] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [sendingId, setSendingId] = useState<number | null>(null);
+  const [reviewSendingId, setReviewSendingId] = useState<number | null>(null);
 
   // Timer callbacks close over their values once. Reading `sendingId` state
   // directly in them would see whatever it was when the timer was created, so
   // the guards below consult refs instead.
   const sendingIdRef = useRef<number | null>(null);
+  const reviewSendingIdRef = useRef<number | null>(null);
   const busyRef = useRef(false);
   // null until the first sync completes — Date.now() is impure and cannot be
   // called during render to seed a ref.
@@ -58,13 +63,18 @@ export function useOrders({
     sendingIdRef.current = sendingId;
   }, [sendingId]);
 
+  useEffect(() => {
+    reviewSendingIdRef.current = reviewSendingId;
+  }, [reviewSendingId]);
+
   /** Reload the orders we already have. No Clover round trip, so this is fast. */
   const loadOrders = useCallback(async () => {
     const requestId = (latestLoadRef.current += 1);
     const data = await fetchOrders();
-    // Drop a response that is no longer the newest. Without this, a poll that
-    // started before a Send can resolve after the optimistic update in sendSms
-    // below and revert the card to "pending".
+    // Drop a response that is no longer the newest. The sends below bump
+    // latestLoadRef the moment they start, which is what retires a poll that was
+    // already in flight when staff clicked — otherwise that response lands after
+    // their optimistic update and reverts the card.
     if (requestId !== latestLoadRef.current) return;
     setOrders(data.results);
   }, []);
@@ -76,9 +86,12 @@ export function useOrders({
         // quota and DB reads on nobody's behalf. Coming back into view runs a
         // catch-up instead.
         if (document.visibilityState === "hidden") return;
-        // A Send is mid-flight, and reloading now could race its optimistic
-        // update. The next tick picks it up.
-        if (sendingIdRef.current !== null) return;
+        // A send is mid-flight, and reloading now could race its optimistic
+        // update. The next tick picks it up. (This only stops a *new* poll — the
+        // sends themselves retire one already in flight.)
+        if (sendingIdRef.current !== null || reviewSendingIdRef.current !== null) {
+          return;
+        }
         // One cycle at a time, so a slow sync cannot have a poll pile onto it.
         if (busyRef.current) return;
       }
@@ -192,6 +205,10 @@ export function useOrders({
 
   const sendSms = useCallback(
     async (orderId: number) => {
+      // Retire any load already in flight. The poll guard above only stops a
+      // *new* poll, so without this a GET issued just before the click resolves
+      // after the optimistic update below and puts the card back to pending.
+      latestLoadRef.current += 1;
       setSendingId(orderId);
       try {
         const result = await sendSmsApi(orderId);
@@ -229,5 +246,56 @@ export function useOrders({
     []
   );
 
-  return { orders, loading, syncing, error, refresh, sendSms, sendingId };
+  const sendReview = useCallback(
+    async (orderId: number) => {
+      // Same reason as sendSms: a load already in flight must not land after the
+      // optimistic update below and un-say what the dialog just told staff.
+      latestLoadRef.current += 1;
+      setReviewSendingId(orderId);
+      try {
+        const result = await sendReviewApi(orderId);
+        if (result.status === "sent") {
+          // Take the timestamp from the server rather than predicting one, so the
+          // card and the audit row agree about when this customer was asked.
+          setOrders((prev) =>
+            prev.map((o) =>
+              o.id === orderId ? { ...o, review_last_sent_at: result.created_at } : o
+            )
+          );
+          toast({
+            title: "Review request sent!",
+            description: "Customer has been asked to leave a review.",
+          });
+        } else {
+          toast({
+            title: "Review request failed",
+            description: result.error_message || "Unknown error",
+            variant: "destructive",
+          });
+        }
+      } catch (err) {
+        toast({
+          title: "Review request failed",
+          description:
+            err instanceof Error ? err.message : "Could not send review request",
+          variant: "destructive",
+        });
+      } finally {
+        setReviewSendingId(null);
+      }
+    },
+    []
+  );
+
+  return {
+    orders,
+    loading,
+    syncing,
+    error,
+    refresh,
+    sendSms,
+    sendingId,
+    sendReview,
+    reviewSendingId,
+  };
 }

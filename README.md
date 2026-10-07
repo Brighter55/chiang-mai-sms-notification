@@ -21,6 +21,7 @@ Password-protected dashboard, live order cards, one-click SMS via Twilio. No dev
 - 🔐 Session-based login (Django auth) — the dashboard is private
 - 🔄 **Manual** Clover order sync — pull recent online orders with one click (no background polling)
 - 📲 Send "ready for pickup" SMS to a customer with one click (Twilio)
+- ⭐ Ask a customer for a Google review from the card's ⋮ menu — the dialog says so if that customer has already been asked
 - 📋 Today's orders up top, older orders collapsed behind a toggle
 - 🧾 Per-order notification history (sent / failed logs)
 - 📝 Public pages: Privacy Policy, EULA, Support — plus an SMS opt-in endpoint
@@ -45,6 +46,13 @@ POST /api/orders/sync/
 Staff clicks "Send" on an order card
   ▼
 POST /api/orders/{id}/send/  →  Twilio SMS  →  order status: pending → notified
+
+Staff picks "Send Review" from a card's ⋮ menu and confirms the dialog
+  ▼
+POST /api/orders/{id}/review/  →  Twilio SMS with the Google review link
+  → a ReviewRequest row is logged. The order's status is deliberately untouched:
+    whether someone was told their food is ready says nothing about whether they
+    were asked for a review.
 ```
 
 Orders are pulled with a **merchant-generated Clover API token**
@@ -56,12 +64,22 @@ That is a hard constraint, not an accident: fetching orders or customers
 individually took ~20s and tripped Clover's 429 rate limit, and because a failed
 call returns `None`, rate-limited orders were silently dropped. Tests pin it.
 
-The SMS message is generic (no customer name, no item list), e.g.:
+Both SMS messages are generic — no customer name, no item list. That is a privacy
+decision, not an oversight: the text lands on whatever lock screen it reaches. The
+review dialog *does* name the customer, because that one is only ever on staff's
+own screen.
 
 ```
 Your order from Chiang Mai is ready for pickup! 🛍️
 
 Thank you!
+
+Reply STOP to opt out.
+```
+
+```
+Thanks for your order! Please take a moment to leave us a 5-star review:
+https://g.page/r/CaclYbIcHi0rEBM/review
 
 Reply STOP to opt out.
 ```
@@ -81,13 +99,13 @@ Reply STOP to opt out.
 ```
 backend/
   config/          Django settings, URL routing
-  orders/          Order + NotificationLog models, DRF viewsets, Clover/Twilio services
+  orders/          Order + NotificationLog + ReviewRequest models, DRF viewsets, Clover/Twilio services
   subscribers/     OptInSubscriber model → stored on the separate "landing" DB
   .env.example     documented env vars (committed)
 frontend/
   src/pages/       Dashboard, LoginPage, EulaPage, PrivacyPage, SupportPage
   src/lib/api.ts   API client + CSRF handling
-  src/hooks/       useOrders (sync-then-load, optimistic SMS state)
+  src/hooks/       useOrders (sync-then-load, optimistic SMS + review state)
 ```
 
 ## API overview
@@ -103,9 +121,10 @@ All endpoints return JSON. Everything except `/api/login/`, `/api/logout/` and `
 | GET | `/api/orders/{id}/` | Order detail incl. notification history |
 | POST | `/api/orders/sync/` | Manual Clover sync → `{created, updated, skipped, errors}` |
 | POST | `/api/orders/{id}/send/` | Send the SMS reminder (marks order notified) |
+| POST | `/api/orders/{id}/review/` | Text a Google review link (order status untouched; never refuses a repeat ask) |
 | GET | `/api/logs/` | Notification send history |
 | POST | `/api/opt-in/` | Public: store a phone number with SMS consent (landing DB) |
-| — | `/admin/` | Django admin for orders & notification logs |
+| — | `/admin/` | Django admin for orders, notification logs & review requests |
 
 Auth is **session-based** with sliding 8h expiry. Because the production API
 lives on a different origin from the dashboard, the CSRF token is returned in the
@@ -156,16 +175,24 @@ auto-allows ngrok hosts so session cookies work over the tunnel.
 ### Automated checks
 
 ```sh
-python scripts/check.py           # Django check, migrations, backend tests,
-                                  # ruff, frontend lint + build
-python scripts/check.py --e2e     # ...plus the Playwright dashboard suite
+python scripts/check.py              # Django check, migrations, backend tests,
+                                     # ruff, frontend lint + build
+python scripts/check.py --postgres   # ...plus the backend suite again on Postgres
+python scripts/check.py --e2e        # ...plus the Playwright dashboard suite
 ```
 
-CI runs exactly this script, so a green local run means a green build. The E2E
-suite drives the real dashboard in a browser — logging in, rendering orders,
-refreshing, sending an SMS — against a throwaway database, with Clover and Twilio
-both intercepted so nothing leaves the machine. See the `/verify-dashboard` skill.
-First run needs `npx playwright install chromium`.
+CI runs exactly this script — with `--postgres` — so a green local run means a
+green build. The E2E suite drives the real dashboard in a browser — logging in,
+rendering orders, refreshing, sending an SMS — against a throwaway database, with
+Clover and Twilio both intercepted so nothing leaves the machine. See the
+`/verify-dashboard` skill. First run needs `npx playwright install chromium`.
+
+`--postgres` exists because the default `backend-tests` gate runs on SQLite while
+production runs Postgres, and a query that only works on one will not fail on the
+other. It runs the same suite twice, on both engines, and checks the engine
+before it does — so it can never quietly pass by running SQLite again. The E2E
+stack stays on SQLite deliberately, so it still boots anywhere with no database
+service to provision.
 
 ## Switching to PostgreSQL
 
@@ -203,11 +230,14 @@ First run needs `npx playwright install chromium`.
 | `TWILIO_PHONE_NUMBER` | Twilio sender number (E.164) |
 | `DEFAULT_PHONE_REGION` | Region used to parse/normalize phones (default `US`) |
 | `MERCHANT_NAME` | Shop name shown in the SMS |
+| `GOOGLE_REVIEW_URL` | Review link texted by "Send Review". Defaults to the restaurant's g.page link; set it blank to make the endpoint refuse with 503 |
 | `VITE_API_URL` *(frontend)* | Production API base; defaults to `/api` (proxied in dev) |
 
 ## Deployment notes
 
 - Production config lives in gitignored `backend/.env.production` and `frontend/.env.production` (frontend points `VITE_API_URL` at the API host, e.g. `https://api.chiangmaistl-infra.com/api`).
+- **Run `scripts/release.sh` as a pre-deploy step** — it migrates both databases before the new code serves traffic. Deleting this step is how production once 500'd on every order fetch: the review feature added a table the order *list* correlates against, so a database behind the code broke the whole dashboard rather than just the new button. `scripts/check.py` cannot catch that — `makemigrations --check` proves a migration file exists, never that a database has run it.
 - Run the Django backend with **gunicorn** (`gunicorn config.wsgi`) and serve the built frontend (`npm run build` → `dist/`) as static files.
 - Set `DEBUG=False`, `CLOVER_USE_SANDBOX=False`, and real `ALLOWED_HOSTS` in production.
 - Keep real credentials out of git — only `backend/.env.example` is tracked.
+

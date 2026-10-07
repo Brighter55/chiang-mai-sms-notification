@@ -183,3 +183,10 @@ DEFAULT_PHONE_REGION = os.getenv("DEFAULT_PHONE_REGION", "US")
 
 # Merchant
 MERCHANT_NAME = os.getenv("MERCHANT_NAME", "Our Shop")
+
+# The link the dashboard's "Send Review" action texts to customers. Blank it to
+# make the endpoint refuse (503) rather than send a message with no way to act
+# on it — the empty string is the only way to switch that guard on.
+GOOGLE_REVIEW_URL = os.getenv(
+    "GOOGLE_REVIEW_URL", "https://g.page/r/CaclYbIcHi0rEBM/review"
+)

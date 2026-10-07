@@ -9,7 +9,7 @@ from django.utils import timezone
 from twilio.base.exceptions import TwilioRestException
 from twilio.rest import Client
 
-from .models import NotificationLog, Order
+from .models import NotificationLog, Order, ReviewRequest
 
 logger = logging.getLogger(__name__)
 
@@ -360,11 +360,44 @@ def fetch_customer_map(merchant_id: str, customer_ids: set[str]) -> dict[str, di
 # SMS sending
 # ---------------------------------------------------------------------------
 
+def _send_sms(to: str, body: str) -> str:
+    """Send one message through Twilio, returning its SID.
+
+    Shared by both templates so the two sends cannot drift apart in how they
+    authenticate or which number they come from.
+    """
+    client = Client(
+        settings.TWILIO_ACCOUNT_SID,
+        settings.TWILIO_AUTH_TOKEN,
+    )
+    msg = client.messages.create(
+        body=body,
+        from_=settings.TWILIO_PHONE_NUMBER,
+        to=to,
+    )
+    return msg.sid
+
+
 def build_sms_message(order: Order) -> str:
     merchant = settings.MERCHANT_NAME
     return (
         f"Your order from {merchant} is ready for pickup! 🛍️\n\n"
         f"Thank you!\n\n"
+        f"Reply STOP to opt out."
+    )
+
+
+def build_review_message() -> str:
+    """The review ask.
+
+    Takes no order, for the same reason ``build_sms_message`` ignores its own:
+    no customer name and no item list. These messages land on whatever lock
+    screen they reach, so the body stays generic — that is a privacy decision,
+    not an oversight.
+    """
+    return (
+        f"Thanks for your order! Please take a moment to leave us a "
+        f"5-star review: {settings.GOOGLE_REVIEW_URL}\n\n"
         f"Reply STOP to opt out."
     )
 
@@ -386,16 +419,8 @@ def send_order_notification(order: Order) -> NotificationLog:
     )
 
     try:
-        client = Client(
-            settings.TWILIO_ACCOUNT_SID,
-            settings.TWILIO_AUTH_TOKEN,
-        )
-        msg = client.messages.create(
-            body=message_body,
-            from_=settings.TWILIO_PHONE_NUMBER,
-            to=order.customer_phone,
-        )
-        notification.twilio_sid = msg.sid
+        sid = _send_sms(order.customer_phone, message_body)
+        notification.twilio_sid = sid
         notification.status = NotificationLog.Status.SENT
         notification.save(update_fields=["twilio_sid", "status"])
 
@@ -403,7 +428,7 @@ def send_order_notification(order: Order) -> NotificationLog:
         order.notified_at = timezone.now()
         order.save(update_fields=["status", "notified_at"])
 
-        logger.info("SMS sent to %s (SID: %s)", order.customer_phone, msg.sid)
+        logger.info("SMS sent to %s (SID: %s)", order.customer_phone, sid)
 
     except TwilioRestException as exc:
         notification.status = NotificationLog.Status.FAILED
@@ -418,3 +443,46 @@ def send_order_notification(order: Order) -> NotificationLog:
         logger.exception("Unexpected error sending SMS for order %s", order.clover_order_id)
 
     return notification
+
+
+def send_review_request(order: Order) -> ReviewRequest:
+    """Text *order*'s customer a Google review link.
+
+    Creates a ``ReviewRequest`` row capturing the result (sent / failed). Unlike
+    ``send_order_notification`` it deliberately leaves the order untouched: a
+    review ask says nothing about whether the customer was ever told their food
+    was ready, and marking the order notified here would hide an order nobody
+    has actually chased from staff.
+    """
+    message_body = build_review_message()
+
+    review = ReviewRequest.objects.create(
+        order=order,
+        recipient_phone=order.customer_phone,
+        message_body=message_body,
+        status=ReviewRequest.Status.SENT,  # optimistic — updated on failure
+    )
+
+    try:
+        sid = _send_sms(order.customer_phone, message_body)
+        review.twilio_sid = sid
+        review.status = ReviewRequest.Status.SENT
+        review.save(update_fields=["twilio_sid", "status"])
+        logger.info("Review request sent to %s (SID: %s)", order.customer_phone, sid)
+
+    except TwilioRestException as exc:
+        review.status = ReviewRequest.Status.FAILED
+        review.error_message = str(exc)
+        review.save(update_fields=["status", "error_message"])
+        logger.error("Twilio error for review of order %s: %s", order.clover_order_id, exc)
+
+    except Exception:
+        review.status = ReviewRequest.Status.FAILED
+        review.error_message = "Unexpected error sending review request"
+        review.save(update_fields=["status", "error_message"])
+        logger.exception(
+            "Unexpected error sending review request for order %s",
+            order.clover_order_id,
+        )
+
+    return review

@@ -27,11 +27,20 @@ function isToday(dateStr: string): boolean {
 export function Dashboard({ onLogout }: DashboardProps) {
   const { syncMinutes, listMinutes, setSyncMinutes, setListMinutes } =
     useIntervalSettings();
-  const { orders, loading, syncing, error, refresh, sendSms, sendingId } =
-    useOrders({
-      syncIntervalMs: syncMinutes * 60_000,
-      listIntervalMs: listMinutes * 60_000,
-    });
+  const {
+    orders,
+    loading,
+    syncing,
+    error,
+    refresh,
+    sendSms,
+    sendingId,
+    sendReview,
+    reviewSendingId,
+  } = useOrders({
+    syncIntervalMs: syncMinutes * 60_000,
+    listIntervalMs: listMinutes * 60_000,
+  });
   const [showOlder, setShowOlder] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
 
@@ -48,6 +57,8 @@ export function Dashboard({ onLogout }: DashboardProps) {
         order={order}
         onSendSms={sendSms}
         isSending={sendingId === order.id}
+        onSendReview={sendReview}
+        isSendingReview={reviewSendingId === order.id}
       />
     );
   }

@@ -85,14 +85,28 @@ pre-change code (`git stash push -- <implementation file>`) and report the
 failure count.
 
 ```bash
-python scripts/check.py           # the six fast gates, ~10s
-python scripts/check.py --e2e     # ...plus the Playwright suite, ~25s
+python scripts/check.py              # the six fast gates, ~10s
+python scripts/check.py --postgres   # ...plus the backend suite on Postgres, ~20s
+python scripts/check.py --e2e        # ...plus the Playwright suite, ~25s
 ```
 
 Gates: Django system check, pending migrations, backend tests, backend lint (ruff),
-frontend lint, frontend build — and with `--e2e`, the browser suite. All of them run
-even if an earlier one fails, so one pass gives the whole picture; exit code 0 only if
-everything passed.
+frontend lint, frontend build — and with `--postgres`, a check that the engine really is
+Postgres plus the same backend suite run again on it; with `--e2e`, the browser suite. All
+of them run even if an earlier one fails, so one pass gives the whole picture; exit code 0
+only if everything passed.
+
+`--postgres` exists because the default backend gate runs on SQLite and production does
+not, so a query that only works on one engine passes every check and then 500s in the
+restaurant. CI passes it. The E2E stack stays on SQLite on purpose
+(`scripts/e2e-backend.mjs`), so it still boots with no database service to provision.
+
+**What no gate covers: applying migrations to a deployed database.** `makemigrations
+--check` proves a migration *file* exists, never that a database has run it. That is
+`scripts/release.sh`, run as a pre-deploy step. It was missing once, and production
+returned 500 on every order fetch — the review feature had put a new table on the order
+*list*'s critical path, so a database behind the code broke the whole dashboard, not just
+the new button. Any schema change needs that step to survive the deploy.
 
 `.github/workflows/ci.yml` invokes **this exact script** rather than repeating its
 commands, so green locally means green in CI. Run it before claiming a change works —
@@ -154,6 +168,22 @@ go through one `requests.Session` for connection reuse.
 - Message body (`build_sms_message`) is generic: no customer name, no items. Ends with `Reply STOP to opt out.`
 - Response 200 on sent / 502 on failed, body = the `NotificationLog`.
 
+### Send review request — `POST /api/orders/{id}/review/` (auth required)
+- 503 if `GOOGLE_REVIEW_URL` is blank (mirrors `sync`'s config guard), 400 if no customer
+  phone, else 200 sent / 502 failed — body = the `ReviewRequest`.
+- **No 409 guard, unlike `send`.** Asking a customer twice is a decision the dashboard puts
+  to staff in a confirmation dialog, so the API accepts it. The dialog warns using
+  `review_last_sent_at` from the order list.
+- **Never touches `Order.status`/`notified_at`.** Those describe the pickup notice; a review
+  ask is a separate fact, and conflating them would hide an order nobody has chased.
+- `send_review_request()` writes a `ReviewRequest` row, not a `NotificationLog`: reusing
+  that table would change `notification_count`, the nested `notifications` list on the
+  detail serializer, and `GET /api/logs/`, all of which assume SMS-only.
+- "Already asked" is **per phone**, not per order — a regular who orders twice must not be
+  asked again by accident. Hence `ReviewRequest.objects.sent()` (sent **and** a real
+  `twilio_sid`, since the row is written before Twilio is called) and the `order` FK is
+  `SET_NULL`, so deleting an old order cannot erase the fact that this customer was asked.
+
 ### Opt-in — `POST /api/opt-in/` (public, → landing DB)
 `OptInCreateView` validates + normalizes the phone with `phonenumbers`, enforces uniqueness **after** normalization (the DRF `UniqueValidator` runs on the raw input), then stores on the `landing` DB via the router.
 
@@ -169,6 +199,7 @@ go through one `requests.Session` for connection reuse.
 - Real credentials live in **gitignored** `backend/.env` (local) and `backend/.env.production` + `frontend/.env.production` (deploy). `git ls-files` confirms only `.env.example` is tracked — keep it that way.
 - Frontend API base: `VITE_API_URL` (default `/api`, proxied in dev).
 - `CLOVER_USE_SANDBOX` defaults `True` → `apisandbox.dev.clover.com`. Must be `False` for production.
+- `scripts/release.sh` is the **pre-deploy step** that migrates both databases. The deploy config itself lives in the DigitalOcean console, not this repo — so nothing here can verify it exists, and no gate will notice if it is dropped. A schema change without it ships code whose queries reference tables the database does not have.
 
 ## Skills & project settings
 
