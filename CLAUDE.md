@@ -75,6 +75,15 @@ invoke the **`/start-local-test`** skill. `DEBUG=True` auto-allows ngrok hosts.
 
 ### Verify a change
 
+**Write the failing test first.** For any new feature or behavior change, add
+the test, run it, and confirm it fails against the unmodified code *before*
+writing the implementation — then make it pass. `check.py` proves a change
+works; it cannot tell whether the test would have caught the bug, so a test
+written after the implementation is unverified coverage. If the order was
+missed, prove the new tests are load-bearing by running only them against the
+pre-change code (`git stash push -- <implementation file>`) and report the
+failure count.
+
 ```bash
 python scripts/check.py           # the six fast gates, ~10s
 python scripts/check.py --e2e     # ...plus the Playwright suite, ~25s
@@ -111,9 +120,12 @@ silently dropped.
    `expand=lineItems,orderType,orderCart.orderType,customers`. That single
    response carries everything the sync needs.
 2. `_orders_to_sync()` drops orders whose local status isn't `pending`
-   (already notified/cancelled), drops non-online orders via `is_online_order()`
-   — which is free now, because the order type came back expanded — and caps
-   the rest at `SYNC_ORDER_CAP = 50` in `views.py`.
+   (already notified/cancelled), drops orders whose type isn't one we notify
+   for via `is_online_order()` — online/pickup/delivery plus the merchant's
+   "Take Out" and "Waiting Here" types, matched tolerantly against both
+   `orderType.name` and `.label` (add a name to `_ACCEPTED_ORDER_TYPE_KEYWORDS`
+   to accept another). This costs nothing extra, because the order type came
+   back expanded, and caps the rest at `SYNC_ORDER_CAP = 50` in `views.py`.
 3. `fetch_customer_map()` resolves every customer on the batch in one paged
    sweep of `/customers?expand=phoneNumbers` (stops early once all wanted ids
    are seen; falls back to individual lookups for anything missed).
