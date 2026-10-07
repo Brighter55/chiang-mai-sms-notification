@@ -175,16 +175,24 @@ auto-allows ngrok hosts so session cookies work over the tunnel.
 ### Automated checks
 
 ```sh
-python scripts/check.py           # Django check, migrations, backend tests,
-                                  # ruff, frontend lint + build
-python scripts/check.py --e2e     # ...plus the Playwright dashboard suite
+python scripts/check.py              # Django check, migrations, backend tests,
+                                     # ruff, frontend lint + build
+python scripts/check.py --postgres   # ...plus the backend suite again on Postgres
+python scripts/check.py --e2e        # ...plus the Playwright dashboard suite
 ```
 
-CI runs exactly this script, so a green local run means a green build. The E2E
-suite drives the real dashboard in a browser — logging in, rendering orders,
-refreshing, sending an SMS — against a throwaway database, with Clover and Twilio
-both intercepted so nothing leaves the machine. See the `/verify-dashboard` skill.
-First run needs `npx playwright install chromium`.
+CI runs exactly this script — with `--postgres` — so a green local run means a
+green build. The E2E suite drives the real dashboard in a browser — logging in,
+rendering orders, refreshing, sending an SMS — against a throwaway database, with
+Clover and Twilio both intercepted so nothing leaves the machine. See the
+`/verify-dashboard` skill. First run needs `npx playwright install chromium`.
+
+`--postgres` exists because the default `backend-tests` gate runs on SQLite while
+production runs Postgres, and a query that only works on one will not fail on the
+other. It runs the same suite twice, on both engines, and checks the engine
+before it does — so it can never quietly pass by running SQLite again. The E2E
+stack stays on SQLite deliberately, so it still boots anywhere with no database
+service to provision.
 
 ## Switching to PostgreSQL
 
@@ -228,6 +236,8 @@ First run needs `npx playwright install chromium`.
 ## Deployment notes
 
 - Production config lives in gitignored `backend/.env.production` and `frontend/.env.production` (frontend points `VITE_API_URL` at the API host, e.g. `https://api.chiangmaistl-infra.com/api`).
+- **Run `scripts/release.sh` as a pre-deploy step** — it migrates both databases before the new code serves traffic. Deleting this step is how production once 500'd on every order fetch: the review feature added a table the order *list* correlates against, so a database behind the code broke the whole dashboard rather than just the new button. `scripts/check.py` cannot catch that — `makemigrations --check` proves a migration file exists, never that a database has run it.
 - Run the Django backend with **gunicorn** (`gunicorn config.wsgi`) and serve the built frontend (`npm run build` → `dist/`) as static files.
 - Set `DEBUG=False`, `CLOVER_USE_SANDBOX=False`, and real `ALLOWED_HOSTS` in production.
 - Keep real credentials out of git — only `backend/.env.example` is tracked.
+

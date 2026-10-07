@@ -21,9 +21,30 @@ permissions:
   contents: read
 
 jobs:
-  # The six fast gates. Seconds, not minutes.
+  # The six fast gates, plus the backend suite again on Postgres. Seconds, not
+  # minutes.
   check:
     runs-on: ubuntu-latest
+
+    # The --postgres gate needs a real Postgres, because the gates above it run
+    # on sqlite and production does not — a query that only works on sqlite
+    # should fail here instead of in the restaurant. Credentials and port match
+    # config/settings.py's own local-Postgres fallback, which is what the gate
+    # resolves to when there is no backend/.env (there never is in CI).
+    # Django creates and drops its own test_* databases, so the postgres
+    # superuser's CREATEDB right is all this needs.
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_PASSWORD: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
 
     steps:
       - uses: actions/checkout@v4
@@ -48,10 +69,11 @@ jobs:
         run: npm ci
         working-directory: frontend
 
-      # check.py points both databases at sqlite and falls back to the
-      # interpreter running it, so no venv or service containers are needed.
+      # --postgres: check.py points the default suite at sqlite and falls back to
+      # the interpreter running it, so the six fast gates still need no service
+      # containers. Only the Postgres gate does, and that is the one above.
       - name: Run all gates
-        run: python scripts/check.py
+        run: python scripts/check.py --postgres
 
   # Separate job so a flake can be re-run on its own without redoing the fast
   # gates — the usual reason to split it out, not speed. Runs the same npm

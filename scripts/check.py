@@ -5,8 +5,9 @@ This exists so an agent (or a person) can verify a change without knowing the
 project's layout: run this, read the summary, and you know whether the tree is
 sound. CI runs exactly these gates, so "green here" means "green there".
 
-    python scripts/check.py            # the six fast gates
-    python scripts/check.py --e2e      # ...and the Playwright suite
+    python scripts/check.py              # the six fast gates
+    python scripts/check.py --postgres   # ...and the backend suite again on Postgres
+    python scripts/check.py --e2e        # ...and the Playwright suite
 
 Every gate runs even if an earlier one fails, so one pass gives the whole
 picture instead of surfacing problems one at a time.
@@ -58,6 +59,26 @@ def _backend_env() -> dict[str, str]:
     return env
 
 
+def _postgres_env() -> dict[str, str]:
+    """Env for the ``--postgres`` gates: the same suite, on a real Postgres.
+
+    Deliberately does *not* go through :func:`_backend_env`, because the sqlite
+    default there is exactly what hides a Postgres-only failure — the whole
+    point of these gates is to run on the engine production uses.
+
+    With both keys removed, settings.py resolves the database the same way the
+    app does: ``backend/.env`` if it exists, otherwise its own local-Postgres
+    fallback. CI has no ``.env``, so it lands on that fallback — which is what
+    the workflow's service container is configured to match. Either way Django
+    builds and drops its own ``test_*`` databases, so the configured database
+    is never written to.
+    """
+    env = os.environ.copy()
+    env.pop("DATABASE_URL", None)
+    env.pop("LANDING_DATABASE_URL", None)
+    return env
+
+
 @dataclass
 class Gate:
     name: str
@@ -68,7 +89,7 @@ class Gate:
     seconds: float = field(default=0.0, init=False)
 
 
-def _gates(include_e2e: bool = False) -> list[Gate]:
+def _gates(include_e2e: bool = False, include_postgres: bool = False) -> list[Gate]:
     py = _venv_python()
     env = _backend_env()
 
@@ -80,6 +101,10 @@ def _gates(include_e2e: bool = False) -> list[Gate]:
         Gate("django-check", [py, "manage.py", "check"], BACKEND, env),
         # A model change with no migration is a classic silent agent error: tests
         # still pass locally, then the deploy fails or the column is missing.
+        #
+        # Note what this does *not* cover: it proves a migration file exists, not
+        # that any database has run it. Applying them to a deployed database is
+        # scripts/release.sh, which CI cannot check for you.
         Gate(
             "migrations",
             [py, "manage.py", "makemigrations", "--check", "--dry-run"],
@@ -92,10 +117,44 @@ def _gates(include_e2e: bool = False) -> list[Gate]:
         Gate("frontend-build", [npm, "run", "build"], FRONTEND),
     ]
 
+    if include_postgres:
+        # The same suite, on Postgres, because the gates above run on sqlite and
+        # production does not. Two engines, one set of tests: a query that only
+        # works on sqlite now fails here instead of in the restaurant.
+        #
+        # Two gates rather than one so the *engine* is asserted, not assumed. If
+        # backend/.env still points at sqlite (the zero-setup default in
+        # .env.example), the suite below would quietly run on sqlite again and
+        # the gate would mean nothing. It prints the engine it found, so a pass
+        # is evidence rather than silence.
+        pg_env = _postgres_env()
+        gates.append(
+            Gate(
+                "postgres-engine",
+                [
+                    py,
+                    "manage.py",
+                    "shell",
+                    "-c",
+                    "import sys; from django.db import connection; "
+                    "print('database engine:', connection.vendor); "
+                    "sys.exit(0 if connection.vendor == 'postgresql' else 1)",
+                ],
+                BACKEND,
+                pg_env,
+            )
+        )
+        gates.append(
+            Gate("backend-tests-postgres", [py, "manage.py", "test"], BACKEND, pg_env)
+        )
+
     if include_e2e:
         # Boots its own servers and drives a real browser — see
         # frontend/playwright.config.ts. Kept out of the default run because it
         # is the slow gate and needs browsers installed.
+        #
+        # The E2E stack stays on sqlite on purpose (scripts/e2e-backend.mjs), so
+        # it keeps booting anywhere with no database service to provision.
         gates.append(Gate("e2e", [npm, "run", "test:e2e"], FRONTEND))
 
     return gates
@@ -124,13 +183,21 @@ def main() -> int:
 
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument(
+        "--postgres",
+        action="store_true",
+        help=(
+            "also run the backend suite on Postgres, the engine production uses "
+            "(CI passes this; see README)"
+        ),
+    )
+    parser.add_argument(
         "--e2e",
         action="store_true",
         help="also run the Playwright suite (needs browsers; see README)",
     )
     args = parser.parse_args()
 
-    gates = _gates(include_e2e=args.e2e)
+    gates = _gates(include_e2e=args.e2e, include_postgres=args.postgres)
 
     print(f"checking {ROOT}")
     for gate in gates:

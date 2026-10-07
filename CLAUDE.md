@@ -85,14 +85,28 @@ pre-change code (`git stash push -- <implementation file>`) and report the
 failure count.
 
 ```bash
-python scripts/check.py           # the six fast gates, ~10s
-python scripts/check.py --e2e     # ...plus the Playwright suite, ~25s
+python scripts/check.py              # the six fast gates, ~10s
+python scripts/check.py --postgres   # ...plus the backend suite on Postgres, ~20s
+python scripts/check.py --e2e        # ...plus the Playwright suite, ~25s
 ```
 
 Gates: Django system check, pending migrations, backend tests, backend lint (ruff),
-frontend lint, frontend build — and with `--e2e`, the browser suite. All of them run
-even if an earlier one fails, so one pass gives the whole picture; exit code 0 only if
-everything passed.
+frontend lint, frontend build — and with `--postgres`, a check that the engine really is
+Postgres plus the same backend suite run again on it; with `--e2e`, the browser suite. All
+of them run even if an earlier one fails, so one pass gives the whole picture; exit code 0
+only if everything passed.
+
+`--postgres` exists because the default backend gate runs on SQLite and production does
+not, so a query that only works on one engine passes every check and then 500s in the
+restaurant. CI passes it. The E2E stack stays on SQLite on purpose
+(`scripts/e2e-backend.mjs`), so it still boots with no database service to provision.
+
+**What no gate covers: applying migrations to a deployed database.** `makemigrations
+--check` proves a migration *file* exists, never that a database has run it. That is
+`scripts/release.sh`, run as a pre-deploy step. It was missing once, and production
+returned 500 on every order fetch — the review feature had put a new table on the order
+*list*'s critical path, so a database behind the code broke the whole dashboard, not just
+the new button. Any schema change needs that step to survive the deploy.
 
 `.github/workflows/ci.yml` invokes **this exact script** rather than repeating its
 commands, so green locally means green in CI. Run it before claiming a change works —
@@ -185,6 +199,7 @@ go through one `requests.Session` for connection reuse.
 - Real credentials live in **gitignored** `backend/.env` (local) and `backend/.env.production` + `frontend/.env.production` (deploy). `git ls-files` confirms only `.env.example` is tracked — keep it that way.
 - Frontend API base: `VITE_API_URL` (default `/api`, proxied in dev).
 - `CLOVER_USE_SANDBOX` defaults `True` → `apisandbox.dev.clover.com`. Must be `False` for production.
+- `scripts/release.sh` is the **pre-deploy step** that migrates both databases. The deploy config itself lives in the DigitalOcean console, not this repo — so nothing here can verify it exists, and no gate will notice if it is dropped. A schema change without it ships code whose queries reference tables the database does not have.
 
 ## Skills & project settings
 

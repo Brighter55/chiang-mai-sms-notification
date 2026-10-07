@@ -14,6 +14,7 @@ the dashboard") and you need to find the code fast without flailing.
 | Symptom | Start here |
 |---|---|
 | Order missing from the dashboard | Two independent causes: the sync chain (`orders/views.py:_orders_to_sync`, `services.py:is_online_order`, `attach_customer_data`) — and the list's ordering (trap 8) |
+| **No** orders load — every fetch returns 500 | The deployed database is behind the code (trap 14). Check `showmigrations` before touching a query |
 | Refresh is slow, or orders vanish in bulk | The 2-call invariant — `orders/views.py:_run_sync`, `services.py:fetch_customer_map` |
 | "Send" button fails / 409 / 400 | `orders/views.py:OrderViewSet.send` (L211), `services.py:send_order_notification` (L346) |
 | "Send Review" missing, or the dialog never warns about a repeat | `orders/views.py:OrderViewSet.review` + `review_last_sent_at` in `get_queryset`; `frontend/src/components/OrderCard.tsx` |
@@ -200,6 +201,8 @@ state, a `Subquery`.
 - **Right fix:** a **bare** correlated `Subquery`, no `Func` wrapper, and no count field at
   all — `review_last_sent_at` answers the question on its own.
   `OrderReviewStateTests.test_review_rows_do_not_inflate_the_notification_count` is the guard.
+- **Not the whole story:** when the dashboard 500s on *every* order fetch, this trap is the
+  obvious suspect — and it has been the wrong one. Check the deployed schema first: trap 14.
 
 ### 11. A review row is written before Twilio is called
 
@@ -263,6 +266,36 @@ Cancel — Cancel is just where someone noticed.
   which asserts `<body>` is not left at `pointer-events: none` **and** that a click on the
   dashboard still works.
 
+### 14. A database behind the code 500s the whole dashboard
+
+Reported as *"the google review update ... unable to fetch the order, returns 500"* — in
+production, right after the review feature shipped.
+
+`OrderViewSet.get_queryset` annotates the order list with a correlated `Subquery` over
+`ReviewRequest` (trap 10), so **every** `GET /api/orders/` references
+`orders_reviewrequest`, even with zero review rows. On a deployed database where
+`0002_reviewrequest` was never applied, that is `ProgrammingError: relation
+"orders_reviewrequest" does not exist` on every order fetch. Not a broken review button — a
+dashboard with no orders on it.
+
+- **Wrong fix:** treat it as a query bug and start editing `get_queryset`. That is the shape
+  trap 10 describes, it is where this symptom points, and it is where the hunt went first.
+  The query is fine: run against Postgres 17 with the real synced orders, it returns rows.
+  **A 500 with no explicit status code is a database fault, not a query one** — every other
+  branch of the order routes returns a deliberate 4xx/5xx.
+- **Right fix, and the first thing to run:** `python manage.py showmigrations orders` against
+  the *deployed* database. A migration file in the repo says nothing about a database.
+- **Why no gate caught it:** `makemigrations --check` (a `check.py` gate) proves the file
+  exists, never that a database has run it. Nothing in the repo can see the deployed
+  schema.
+- **Durable fix:** `scripts/release.sh`, run as a pre-deploy step, migrates **both**
+  databases and fails the deploy if it cannot. The deploy config lives in the DigitalOcean
+  console rather than this repo, so no local check can confirm it is still wired up.
+- **Why it hurt more than it should have:** the review table sits on the *order list's*
+  critical path, so the blast radius of any schema lag is the entire dashboard rather than
+  the one feature that changed. Worth asking, for any new state, whether the list really
+  needs it.
+
 ---
 
 ## Where the tests won't save you
@@ -271,6 +304,10 @@ Cancel — Cancel is just where someone noticed.
 **SMS path** (message shape, every send outcome, the endpoint's 409/400/200/502 mapping).
 Uncovered, in rough order of risk:
 
+- **Whether a deployed database has the migrations applied.** No gate can see it, and it
+  took the dashboard down once — trap 14. `scripts/release.sh` is the only thing standing
+  between a schema change and a repeat, and it lives in the DigitalOcean console where
+  nothing local can check it.
 - **`subscribers/`** — no tests at all, including the normalize-then-check-uniqueness
   logic that has its own trap (above).
 - **Auth views** (`LoginView`, `LogoutView`, `MeView`) and permission enforcement.
